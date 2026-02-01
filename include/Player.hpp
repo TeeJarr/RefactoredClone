@@ -6,7 +6,10 @@
 #define REFACTOREDCLONE_PLAYER_HPP
 
 #pragma once
+#include <memory>
 #include <raylib.h>
+
+#include "Chunk.hpp"
 
 class Player {
 public:
@@ -15,6 +18,10 @@ public:
     Camera3D& getCamera();
 private:
     void move();
+    void breakBlock();
+
+    std::unique_ptr<Chunk>* getCurrentPlayerChunk();
+
     Camera3D camera;
 };
 

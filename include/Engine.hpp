@@ -6,6 +6,7 @@
 #define REFACTOREDCLONE_ENGINE_HPP
 #pragma once
 #include <memory>
+#include "Chunk.hpp"
 
 #include "Player.hpp"
 
@@ -19,13 +20,12 @@ private:
     void update();
 
     static void initWindowData();
-    void initModels();
+    static void initModels();
     static void loadBlockTextures();
 
 private:
     std::unique_ptr<Player> player;
-    Model cubeModel{};
-    Mesh mesh{};
+    std::string coords;
 };
 
 
