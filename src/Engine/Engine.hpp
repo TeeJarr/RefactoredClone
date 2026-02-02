@@ -6,9 +6,9 @@
 #define REFACTOREDCLONE_ENGINE_HPP
 #pragma once
 #include <memory>
-#include "Chunk.hpp"
+#include "Chunk/Chunk.hpp"
 
-#include "Player.hpp"
+#include "Player/Player.hpp"
 
 
 class Engine {
@@ -19,12 +19,15 @@ private:
     void draw() const;
     void update();
 
-    static void initWindowData();
-    static void loadBlockTextures();
+     void initWindowData();
+     void loadBlockTextures();
 
 private:
     std::unique_ptr<Player> player;
     std::string coords;
+    Texture2D menuBackgroundTexture;
+
+    ~Engine();
 };
 
 

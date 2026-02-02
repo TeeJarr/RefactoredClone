@@ -9,26 +9,7 @@ file(GLOB_RECURSE SOURCES src/*.cpp)
 find_package(raylib)
 
 add_executable(${PROJECT_NAME} ${SOURCES}
-        src/main.cpp
-        src/Engine.cpp
-        include/Engine.hpp
-        src/Player.cpp
-        include/Player.hpp
-        src/Renderer.cpp
-        include/Renderer.hpp
-        include/Blocks.hpp
-        src/Chunk.cpp
-        include/Chunk.hpp
-        include/Settings.hpp
-        src/Settings.cpp
-        src/Menu.cpp
-        include/Menu.hpp
-        src/LightingSystem.cpp
-        src/LightingSystem.hpp
-        src/MeshThreadPool.cpp
-        src/MeshThreadPool.hpp
-        include/Collision.hpp
-        include/Common.hpp
-)
+        src/World/Biome/Biome.cpp
+        src/World/Biome/Biome.hpp)
 target_link_libraries(${PROJECT_NAME} PUBLIC raylib)
-target_include_directories(${PROJECT_NAME} PUBLIC include)
+target_include_directories(${PROJECT_NAME} PUBLIC include src include/Block src/World src/Engine src/Menu)

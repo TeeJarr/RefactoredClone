@@ -10,9 +10,9 @@
 #include <string>
 #include <unordered_map>
 
-#include "Blocks.hpp"
-#include "Chunk.hpp"
-#include "Common.hpp"
+#include "../../include/Block/Blocks.hpp"
+#include "Chunk/Chunk.hpp"
+#include "../../include/Common.hpp"
 
 struct UVRect {
     float u0, v0;

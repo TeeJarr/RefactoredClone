@@ -5,9 +5,8 @@
 #ifndef REFACTOREDCLONE_COLLISION_HPP
 #define REFACTOREDCLONE_COLLISION_HPP
 
-// In ChunkHelper or a new Collision.hpp
-
 #pragma once
+#include <raylib.h>
 
 struct AABB {
     Vector3 min{};

@@ -6,42 +6,34 @@
 #define REFACTOREDCLONE_CHUNK_HPP
 #pragma once
 
+#include <FastNoiseLite.h>
+#include <atomic>
 #include <raylib.h>
 #include <unordered_map>
-#include <FastNoiseLite.h>
 #include <vector>
-#include <atomic>
 
-
-#include <queue>
-#include <mutex>
 #include <memory>
-
-#include <queue>
 #include <mutex>
-#include <memory>
+#include <queue>
+
+#include <optional>
 #include <thread>
 #include <unordered_set>
-#include <optional>
 
-#include "Blocks.hpp"
+#include "Block/Blocks.hpp"
 #include "Common.hpp"
-
 
 struct ChunkCoord {
     int x, z;
 
-    bool operator==(const ChunkCoord &other) const {
-        return x == other.x && z == other.z;
-    }
+    bool operator==(const ChunkCoord& other) const { return x == other.x && z == other.z; }
 };
 
 struct ChunkCoordHash {
-    std::size_t operator()(const ChunkCoord &c) const noexcept {
+    std::size_t operator()(const ChunkCoord& c) const noexcept {
         return std::hash<int>()(c.x) ^ (std::hash<int>()(c.z) << 1);
     }
 };
-
 
 constexpr int CHUNK_SIZE_X = 16;
 constexpr int CHUNK_SIZE_Y = 256;
@@ -49,11 +41,11 @@ constexpr int CHUNK_SIZE_Z = 16;
 
 struct TerrainParams {
     // Large landmasses (continents/oceans)
-    float continentFreq = 0.03f;
+    float continentFreq = 0.3f;
     float continentAmp = 35.0f;
 
     // Biome-scale variation
-    float regionFreq = 0.08f;
+    float regionFreq = 0.8f;
     float regionAmp = 20.0f;
 
     // Hills
@@ -61,16 +53,16 @@ struct TerrainParams {
     float hillAmp = 18.0f;
 
     // Small bumps
-    float detailFreq = 0.6f;
-    float detailAmp = 6.0f;
+    float detailFreq = 0.3f;
+    float detailAmp = 10.0f;
 
     // Surface roughness
-    float microFreq = 0.12f;
+    float microFreq = 0.5f;
     float microAmp = 2.0f;
 
     // Mountains
     float mountainFreq = 0.5f;
-    float mountainThreshold = 0.4f;
+    float mountainThreshold = 0.2f;
     float mountainAmp = 55.0f;
 
     // General
@@ -80,42 +72,163 @@ struct TerrainParams {
 
 inline TerrainParams terrainParams;
 
-// In Chunk.hpp - replace the existing BiomeType enum and Biome struct
-
 enum BiomeType {
     BIOME_OCEAN,
     BIOME_BEACH,
     BIOME_DESERT,
     BIOME_PLAINS,
     BIOME_FOREST,
+    BIOME_TAIGA,
+    BIOME_SWAMP,
     BIOME_HILLS,
     BIOME_MOUNTAINS,
-    NUM_BIOMES
+    BIOME_RIVER,
+    BIOME_COUNT
 };
 
-struct Biome {
+struct BiomeHelper {
     BiomeType type;
+
+    // Base terrain
     float baseHeight;
     float heightVariation;
+
+    // Hills
     float hillFrequency;
     float hillAmplitude;
+
+    // Mountains
+    float mountainStrength; // <-- NEW
+
+    // Blocks & features
     int surfaceBlock;
     int subsurfaceBlock;
-    float treeChance; // 0 = no trees, higher = more trees
+    float treeChance;
     bool hasRivers;
 };
 
-inline std::unordered_map<BiomeType, Biome> biomes = {
-    {BIOME_OCEAN, {BIOME_OCEAN, 35.0f, 8.0f, 0.01f, 3.0f, ID_SAND, ID_SAND, 0.0f, false}},
-    {BIOME_BEACH, {BIOME_BEACH, 50.0f, 3.0f, 0.02f, 2.0f, ID_SAND, ID_SAND, 0.0f, false}},
-    {BIOME_DESERT, {BIOME_DESERT, 62.0f, 10.0f, 0.015f, 8.0f, ID_SAND, ID_SAND, 0.0f, false}},
-    {BIOME_PLAINS, {BIOME_PLAINS, 64.0f, 6.0f, 0.02f, 4.0f, ID_GRASS, ID_DIRT, 0.003f, true}},
-    {BIOME_FOREST, {BIOME_FOREST, 66.0f, 10.0f, 0.025f, 6.0f, ID_GRASS, ID_DIRT, 0.04f, true}},
-    {BIOME_HILLS, {BIOME_HILLS, 72.0f, 25.0f, 0.03f, 15.0f, ID_GRASS, ID_DIRT, 0.01f, true}},
-    {BIOME_MOUNTAINS, {BIOME_MOUNTAINS, 85.0f, 55.0f, 0.04f, 30.0f, ID_STONE, ID_STONE, 0.005f, false}},
+inline std::unordered_map<BiomeType, BiomeHelper> biomes = {
+    {BIOME_OCEAN,
+     {BIOME_OCEAN,
+      45.0f,      // baseHeight
+      3.0f,       // hillAmplitude
+      0.01f,      // hillFrequency
+      2.0f,
+      0.0f,       // mountainStrength
+      ID_SAND,
+      ID_SAND,
+      0.0f,       // treeChance
+      false}},
+
+    {BIOME_BEACH,
+     {BIOME_BEACH,
+      63.0f,
+      1.5f,       // Very flat
+      0.02f,
+      2.0f,
+      0.0f,
+      ID_SAND,
+      ID_SAND,
+      0.0f,
+      false}},
+
+    {BIOME_DESERT,
+     {BIOME_DESERT,
+      66.0f,
+      3.0f,       // Gentle dunes
+      0.015f,
+      5.0f,
+      0.0f,
+      ID_SAND,
+      ID_SAND,
+      0.0f,       // Cactus handled separately
+      false}},
+
+    {BIOME_PLAINS,
+     {BIOME_PLAINS,
+      64.0f,
+      4.0f,       // Gentle rolling
+      0.02f,
+      6.0f,
+      0.0f,
+      ID_GRASS,
+      ID_DIRT,
+      0.005f,     // Occasional trees
+      true}},
+
+    {BIOME_FOREST,
+     {BIOME_FOREST,
+      66.0f,
+      6.0f,       // Slightly hillier
+      0.025f,
+      10.0f,
+      0.0f,
+      ID_GRASS,
+      ID_DIRT,
+      0.08f,      // Lots of trees
+      true}},
+
+    {BIOME_TAIGA,
+     {BIOME_TAIGA,
+      68.0f,
+      8.0f,       // Hilly
+      0.02f,
+      8.0f,
+      0.0f,
+      ID_GRASS,   // Or ID_SNOW
+      ID_DIRT,
+      0.06f,      // Spruce trees
+      true}},
+
+    {BIOME_SWAMP,
+     {BIOME_SWAMP,
+      62.0f,      // At water level
+      2.0f,       // Very flat
+      0.015f,
+      2.0f,
+      0.0f,
+      ID_GRASS,
+      ID_DIRT,
+      0.04f,
+      false}},
+
+    {BIOME_HILLS,
+     {BIOME_HILLS,
+      72.0f,
+      15.0f,      // Big hills
+      0.03f,
+      20.0f,
+      0.4f,
+      ID_GRASS,
+      ID_DIRT,
+      0.02f,
+      true}},
+
+    {BIOME_MOUNTAINS,
+     {BIOME_MOUNTAINS,
+      80.0f,
+      25.0f,
+      0.035f,
+      25.0f,
+      0.8f,
+      ID_GRASS,   // Exposed stone at peaks
+      ID_DIRT,
+      0.002f,
+      false}},
+
+    {BIOME_RIVER,
+     {BIOME_RIVER,
+      58.0f,
+      1.0f,
+      0.01f,
+      1.0f,
+      0.0f,
+      ID_SAND,
+      ID_SAND,
+      0.0f,
+      false}},
 };
 
-// In ChunkMeshBuffers, add reserve:
 struct ChunkMeshBuffers {
     std::vector<float> vertices;
     std::vector<float> normals;
@@ -158,7 +271,7 @@ struct Chunk {
     // Three separate models
     mutable Model opaqueModel = {0};
     mutable Model translucentModel = {0}; // Leaves, glass, etc.
-    mutable Model waterModel = {0}; // Water only
+    mutable Model waterModel = {0};       // Water only
 
     mutable bool meshBuilt = false;
     mutable Material material = {0};
@@ -172,21 +285,19 @@ struct Chunk {
     uint8_t skyLight[CHUNK_SIZE_X][CHUNK_SIZE_Y][CHUNK_SIZE_Z];
     uint8_t blockLight[CHUNK_SIZE_X][CHUNK_SIZE_Y][CHUNK_SIZE_Z];
 
-    // Helper to get combined light level (0-15)
     int getLightLevel(int x, int y, int z) const {
-        if (x < 0 || x >= CHUNK_SIZE_X ||
-            y < 0 || y >= CHUNK_SIZE_Y ||
-            z < 0 || z >= CHUNK_SIZE_Z)
+        if (x < 0 || x >= CHUNK_SIZE_X || y < 0 || y >= CHUNK_SIZE_Y || z < 0 || z >= CHUNK_SIZE_Z)
             return 15;
 
         int sky = skyLight[x][y][z];
         int block = blockLight[x][y][z];
 
-        // DEBUG
+#ifndef NDEBUG
         static int debugCount = 0;
         if (debugCount++ < 20 && (sky > 0 || block > 0)) {
             printf("getLightLevel(%d,%d,%d): sky=%d, block=%d\n", x, y, z, sky, block);
         }
+#endif
 
         return std::max(sky, block);
     }
@@ -196,8 +307,7 @@ struct Chunk {
     std::atomic<bool> meshBuilding{false};
 };
 
-
-template<typename T>
+template <typename T>
 struct ThreadSafeQueue {
     std::queue<T> queue;
     std::mutex mtx;
@@ -209,7 +319,7 @@ struct ThreadSafeQueue {
         cv.notify_one();
     }
 
-    bool try_pop(T &out) {
+    bool try_pop(T& out) {
         std::lock_guard<std::mutex> lock(mtx);
         if (queue.empty()) return false;
         out = std::move(queue.front());
@@ -223,7 +333,7 @@ struct ThreadSafeQueue {
         return queue.front();
     }
 
-    T wait_pop(std::atomic<bool> &running) {
+    T wait_pop(std::atomic<bool>& running) {
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [&] { return !queue.empty() || !running.load(); });
 
@@ -239,13 +349,13 @@ struct ThreadSafeQueue {
         return queue.empty();
     }
 
-    void notifyAll() {
-        cv.notify_all();
-    }
+    void notifyAll() { cv.notify_all(); }
 };
 
-
 namespace ChunkHelper {
+    inline FastNoiseLite ridgeNoise; // long mountain chains
+    inline FastNoiseLite riverNoise; // river paths
+    inline FastNoiseLite warpNoise;
     inline FastNoiseLite terrainNoise;
     inline FastNoiseLite biomeNoise;
     inline FastNoiseLite temperatureNoise;
@@ -253,12 +363,51 @@ namespace ChunkHelper {
     inline FastNoiseLite caveNoise;
     inline FastNoiseLite humidityNoise;
     inline FastNoiseLite continentalnessNoise;
+    inline FastNoiseLite detailNoise;
+    inline FastNoiseLite peakNoise;
+    inline FastNoiseLite erosionNoise;
 
     static BlockIds getWorldBlock(int worldX, int worldY, int worldZ);
 
-    inline ThreadSafeQueue<std::unique_ptr<Chunk> > chunkBuildQueue;
+    // Smooth interpolation
+    inline float smoothstep(float edge0, float edge1, float x) {
+        x = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return x * x * (3.0f - 2.0f * x);
+    }
 
-    static ThreadSafeQueue<std::unique_ptr<Chunk> > chunkGenQueue; // queue of std::unique_ptr<Chunk> for CPU generation
+    // Even smoother interpolation
+    inline float smootherstep(float edge0, float edge1, float x) {
+        x = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return x * x * x * (x * (x * 6.0f - 15.0f) + 10.0f);
+    }
+
+    // River mask - creates narrow river channels
+    inline float riverMask(float noiseValue) {
+        float absVal = std::abs(noiseValue);
+        if (absVal > 0.08f) return 0.0f; // Not in river
+
+        // Smooth falloff from center
+        return 1.0f - (absVal / 0.08f);
+    }
+
+
+    // Smooth interpolation helpers
+
+    inline float lerp(float a, float b, float t) {
+        return a + t * (b - a);
+    }
+
+    // Attempt to remap -1,1 to 0,1 smoothly
+    inline float normalize01(float value) {
+        return (value + 1.0f) * 0.5f;
+    }
+
+    // Linear interpolation
+
+    inline ThreadSafeQueue<std::unique_ptr<Chunk>> chunkBuildQueue;
+
+    static ThreadSafeQueue<std::unique_ptr<Chunk>>
+        chunkGenQueue; // queue of std::unique_ptr<Chunk> for CPU generation
 
     inline ThreadSafeQueue<ChunkCoord> chunkRequestQueue;
     inline std::mutex chunkRequestQueueMtx;
@@ -275,19 +424,19 @@ namespace ChunkHelper {
     inline std::atomic<bool> workerRunning = false;
     inline std::condition_variable chunkRequestCV;
 
-    std::unique_ptr<Chunk> generateChunk(const Vector3 &chunkPosIndex);
+    std::unique_ptr<Chunk> generateChunk(const Vector3& chunkPosIndex);
 
     BiomeType getBiome(int wx, int wz);
 
-    float getChunkHeight(const Vector3 &worldPosition);
+    float getChunkHeight(const Vector3& worldPosition);
 
     void initNoiseRenderer();
 
     inline int chunkCount = 0;
 
-    void generateChunkBlocks(Chunk &chunk);
+    void generateChunkBlocks(Chunk& chunk);
 
-    float getBlockyHeight(const Vector3 &worldPos);
+    float getBlockyHeight(const Vector3& worldPos);
 
     float getSurfaceHeight(int wx, int wz);
 
@@ -297,27 +446,27 @@ namespace ChunkHelper {
 
     void generateTree(int x, int y, int z);
 
-    std::unique_ptr<Chunk> generateChunkAsync(const Vector3 &chunkPosIndex);
+    std::unique_ptr<Chunk> generateChunkAsync(const Vector3& chunkPosIndex);
 
     bool isCave(int worldX, int y, int worldZ);
 
-    void populateTrees(Chunk &chunk);
+    void populateTrees(Chunk& chunk);
 
-    void placeWater(const std::unique_ptr<Chunk> &chunk, int chunkOffsetX, int chunkOffsetZ);
+    void placeWater(const std::unique_ptr<Chunk>& chunk, int chunkOffsetX, int chunkOffsetZ);
 
-    Chunk *getChunkFromWorld(int wx, int wz);
+    Chunk* getChunkFromWorld(int wx, int wz);
 
     int getBlock(int wx, int wy, int wz);
 
     void setBlock(int wx, int wy, int wz, int id);
 
-    void generateChunkTerrain(const std::unique_ptr<Chunk> &chunk);
+    void generateChunkTerrain(const std::unique_ptr<Chunk>& chunk);
 
     ChunkCoord worldToChunkCoord(int wx, int wz);
 
-    void markChunkDirty(const ChunkCoord &coord);
+    void markChunkDirty(const ChunkCoord& coord);
 
-    void setBiomeFloor(const std::unique_ptr<Chunk> &chunk);
+    void setBiomeFloor(const std::unique_ptr<Chunk>& chunk);
 
     int WorldToChunk(int w);
 
@@ -325,10 +474,9 @@ namespace ChunkHelper {
 
     float LERP(float a, float b, float t);
 
-    Biome getBiomeType(float biomeFactor);
+    BiomeHelper getBiomeType(float biomeFactor);
 
     float getBiomeFactor(int wx, int wz);
-
 
     BiomeType getBiomeAt(int wx, int wz);
 
@@ -340,10 +488,9 @@ namespace ChunkHelper {
 
     // In Blocks.hpp or a new Biomes.hpp
 
+    static ChunkMeshTriple buildChunkMeshes(const Chunk& chunk);
 
-    static ChunkMeshTriple buildChunkMeshes(const Chunk &chunk);
-
-    static void drawChunkWater(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera);
+    static void drawChunkWater(const std::unique_ptr<Chunk>& chunk, const Camera3D& camera);
 
     inline Color getBiomeGrassTint(BiomeType biome) {
         switch (biome) {
@@ -389,7 +536,6 @@ namespace ChunkHelper {
                 return {80, 140, 50, 255};
         }
     }
-}
+} // namespace ChunkHelper
 
-
-#endif //REFACTOREDCLONE_CHUNK_HPP
+#endif // REFACTOREDCLONE_CHUNK_HPP

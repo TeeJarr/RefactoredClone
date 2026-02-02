@@ -2,17 +2,17 @@
 // Created by Tristan on 1/30/26.
 //
 
-#include "../include/Player.hpp"
-#include "Settings.hpp"
+#include "Player.hpp"
+#include "Engine/Settings.hpp"
 #include <raymath.h>
 #include <raylib.h>
-#include "Blocks.hpp"
-#include "Renderer.hpp"
-#include "Chunk.hpp"
+#include "Block/Blocks.hpp"
+#include "Engine/Rendering/Renderer.hpp"
+#include "World/Chunk/Chunk.hpp"
 #include <cfloat>
 
-#include "Collision.hpp"
-#include "LightingSystem.hpp"
+#include "../Collision/Collision.hpp"
+#include "../Lighitng/LightingSystem.hpp"
 
 Player::Player() {
     this->camera = {0};
@@ -256,6 +256,10 @@ void Player::update() {
         trySpawn();
         return;
     }
+
+#ifndef NDEBUG
+    this->move();
+#else
     float deltaTime = GetFrameTime();
 
     // Mouse look
@@ -295,6 +299,7 @@ void Player::update() {
 
     // Update camera target
     camera.target = Vector3Add(camera.position, forward);
+#endif
     this->breakBlock();
     this->placeBlock();
 }

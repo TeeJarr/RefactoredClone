@@ -9,7 +9,7 @@
 #include <memory>
 #include <raylib.h>
 
-#include "Chunk.hpp"
+#include "World/Chunk/Chunk.hpp"
 
 class Player {
 public:
@@ -41,7 +41,7 @@ private:
 
     Vector3 position{};  // Position at player's feet
 
-    bool spawned = false;
+    bool spawned = true;
     bool waitingForChunks = true;
 
     void placeBlock();

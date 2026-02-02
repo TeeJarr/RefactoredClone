@@ -1,8 +1,8 @@
 #include <iostream>
-
-#include "Engine.hpp"
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
+
+#include "Engine/Engine.hpp"
 
 int main() {
     auto* engine = new Engine();
