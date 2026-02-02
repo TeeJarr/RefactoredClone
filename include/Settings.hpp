@@ -4,6 +4,7 @@
 
 #ifndef REFACTOREDCLONE_SETTINGS_HPP
 #define REFACTOREDCLONE_SETTINGS_HPP
+#pragma once
 
 enum GameStates {
     MENU,

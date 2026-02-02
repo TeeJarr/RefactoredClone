@@ -28,6 +28,7 @@ add_executable(${PROJECT_NAME} ${SOURCES}
         src/MeshThreadPool.cpp
         src/MeshThreadPool.hpp
         include/Collision.hpp
+        include/Common.hpp
 )
 target_link_libraries(${PROJECT_NAME} PUBLIC raylib)
 target_include_directories(${PROJECT_NAME} PUBLIC include)

@@ -6,6 +6,7 @@
 #define REFACTOREDCLONE_LIGHTINGSYSTEM_HPP
 #pragma once
 #include <Chunk.hpp>
+#include "Common.hpp"
 static const int dx1[6] = {0, 0, -1, 1, 0, 0};
 static const int dy1[6] = {0, 0, 0, 0, 1, -1};
 static const int dz1[6] = {-1, 1, 0, 0, 0, 0};

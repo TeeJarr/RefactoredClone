@@ -12,6 +12,7 @@
 
 #include "Blocks.hpp"
 #include "Chunk.hpp"
+#include "Common.hpp"
 
 struct UVRect {
     float u0, v0;

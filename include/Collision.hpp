@@ -7,6 +7,8 @@
 
 // In ChunkHelper or a new Collision.hpp
 
+#pragma once
+
 struct AABB {
     Vector3 min{};
     Vector3 max{};
