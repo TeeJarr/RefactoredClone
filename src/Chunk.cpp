@@ -53,7 +53,7 @@ bool ChunkHelper::isSolidBlock(int x, int y, int z) {
 
 bool ChunkHelper::shouldPlaceTree(int wx, int wz) {
     BiomeType biomeType = getBiomeAt(wx, wz);
-    const Biome& biome = biomes.at(biomeType);
+    const Biome &biome = biomes.at(biomeType);
 
     // No trees in this biome
     if (biome.treeChance <= 0.0f) return false;
@@ -110,7 +110,7 @@ void ChunkHelper::initNoiseRenderer() {
     terrainNoise.SetFractalOctaves(5);
     terrainNoise.SetFractalLacunarity(2.0f);
     terrainNoise.SetFractalGain(0.5f);
-    terrainNoise.SetFrequency(0.008f);  // Main terrain frequency
+    terrainNoise.SetFrequency(0.008f); // Main terrain frequency
 
     // Biome noise
     biomeNoise.SetSeed(static_cast<int>(Settings::worldSeed + 1024));
@@ -119,7 +119,7 @@ void ChunkHelper::initNoiseRenderer() {
     biomeNoise.SetFractalOctaves(5);
     biomeNoise.SetFractalLacunarity(2.0f);
     biomeNoise.SetFractalGain(0.5f);
-    biomeNoise.SetFrequency(0.004f);  // Biome regions
+    biomeNoise.SetFrequency(0.004f); // Biome regions
 
     // Temperature noise
     temperatureNoise.SetSeed(static_cast<int>(Settings::worldSeed + 2000));
@@ -128,7 +128,7 @@ void ChunkHelper::initNoiseRenderer() {
     temperatureNoise.SetFractalOctaves(5);
     temperatureNoise.SetFractalLacunarity(2.0f);
     temperatureNoise.SetFractalGain(0.5f);
-    temperatureNoise.SetFrequency(0.002f);  // Large temperature zones
+    temperatureNoise.SetFrequency(0.002f); // Large temperature zones
 
     // Humidity noise
     humidityNoise.SetSeed(static_cast<int>(Settings::worldSeed + 3000));
@@ -137,7 +137,7 @@ void ChunkHelper::initNoiseRenderer() {
     humidityNoise.SetFractalOctaves(5);
     humidityNoise.SetFractalLacunarity(2.0f);
     humidityNoise.SetFractalGain(0.5f);
-    humidityNoise.SetFrequency(0.002f);  // Large humidity zones
+    humidityNoise.SetFrequency(0.002f); // Large humidity zones
 
     // Continentalness noise
     continentalnessNoise.SetSeed(static_cast<int>(Settings::worldSeed + 4000));
@@ -146,8 +146,9 @@ void ChunkHelper::initNoiseRenderer() {
     continentalnessNoise.SetFractalOctaves(5);
     continentalnessNoise.SetFractalLacunarity(2.0f);
     continentalnessNoise.SetFractalGain(0.5f);
-    continentalnessNoise.SetFrequency(0.001f);  // Very large continents
+    continentalnessNoise.SetFrequency(0.001f); // Very large continents
 }
+
 bool ChunkHelper::isCave(int worldX, int y, int worldZ) {
     float frequency = 0.08f; // higher frequency = smaller caves
     float threshold = 0.65f;
@@ -175,7 +176,7 @@ Chunk *ChunkHelper::getChunkFromWorld(int wx, int wz) {
     int cx = floorDiv(wx, CHUNK_SIZE_X);
     int cz = floorDiv(wz, CHUNK_SIZE_Z);
 
-    ChunkCoord coord{ cx, cz };
+    ChunkCoord coord{cx, cz};
 
     auto it = activeChunks.find(coord);
     if (it == activeChunks.end())
@@ -183,7 +184,6 @@ Chunk *ChunkHelper::getChunkFromWorld(int wx, int wz) {
 
     return it->second.get();
 }
-
 
 
 int ChunkHelper::getBlock(int wx, int wy, int wz) {
@@ -199,7 +199,7 @@ int ChunkHelper::getBlock(int wx, int wy, int wz) {
 }
 
 void ChunkHelper::setBlock(int wx, int wy, int wz, int id) {
-    Chunk* chunk = getChunkFromWorld(wx, wz);
+    Chunk *chunk = getChunkFromWorld(wx, wz);
     if (!chunk) return;
 
     int lx = floorMod(wx, CHUNK_SIZE_X);
@@ -211,7 +211,7 @@ void ChunkHelper::setBlock(int wx, int wy, int wz, int id) {
     chunk->dirty = true;
 }
 
- ChunkCoord ChunkHelper::worldToChunkCoord(int wx, int wz){
+ChunkCoord ChunkHelper::worldToChunkCoord(int wx, int wz) {
     auto conv = [](int v, int size) {
         return (v >= 0) ? (v / size) : ((v - size + 1) / size);
     };
@@ -222,19 +222,20 @@ void ChunkHelper::setBlock(int wx, int wy, int wz, int id) {
     };
 }
 
-void ChunkHelper::markChunkDirty(const ChunkCoord& coord) {
+void ChunkHelper::markChunkDirty(const ChunkCoord &coord) {
     std::lock_guard<std::mutex> lock(activeChunksMutex);
 
     auto it = activeChunks.find(coord);
     if (it == activeChunks.end()) return;
 
-    Chunk* chunk = it->second.get();
+    Chunk *chunk = it->second.get();
     if (!chunk) return;
-    if (chunk->dirty) return;  // Already dirty
-    if (chunk->meshBuilding.load()) return;  // Already rebuilding
+    if (chunk->dirty) return; // Already dirty
+    if (chunk->meshBuilding.load()) return; // Already rebuilding
 
     chunk->dirty = true;
 }
+
 int ChunkHelper::WorldToChunk(int w) {
     return (w >= 0) ? w / CHUNK_SIZE_X : (w - CHUNK_SIZE_X + 1) / CHUNK_SIZE_X;
 }
@@ -261,13 +262,11 @@ Biome ChunkHelper::getBiomeType(float biomeFactor) {
     } else {
         return biomes.at(BIOME_MOUNTAINS);
     }
-
-
 }
 
 float ChunkHelper::getSurfaceHeight(int wx, int wz) {
     BiomeType biomeType = getBiomeAt(wx, wz);
-    const Biome& biome = biomes.at(biomeType);
+    const Biome &biome = biomes.at(biomeType);
 
     float x = static_cast<float>(wx);
     float z = static_cast<float>(wz);
@@ -300,7 +299,7 @@ float ChunkHelper::getSurfaceHeight(int wx, int wz) {
 
     // Ocean floor variation
     if (biomeType == BIOME_OCEAN) {
-        height = std::min(height, (float)(WATER_LEVEL - 5));
+        height = std::min(height, (float) (WATER_LEVEL - 5));
     }
 
     // Blend biomes at edges for smooth transitions
@@ -318,7 +317,7 @@ float ChunkHelper::getSurfaceHeight(int wx, int wz) {
 
             BiomeType neighborBiome = getBiomeAt(sampleX, sampleZ);
             if (neighborBiome != biomeType) {
-                const Biome& neighbor = biomes.at(neighborBiome);
+                const Biome &neighbor = biomes.at(neighborBiome);
 
                 float neighborTerrain = terrainNoise.GetNoise(
                     sampleX * neighbor.hillFrequency,
@@ -348,12 +347,14 @@ std::unique_ptr<Chunk> ChunkHelper::generateChunkAsync(const Vector3 &chunkPosIn
     chunk->chunkCoords.x = chunkX;
     chunk->chunkCoords.z = chunkZ;
 
-    generateChunkTerrain(chunk);  // terrain + caves
-    setBiomeFloor(chunk);          // grass/dirt/sand
-    populateTrees(*chunk);         // trees
+    generateChunkTerrain(chunk); // terrain + caves
+    setBiomeFloor(chunk); // grass/dirt/sand
+    populateTrees(*chunk); // trees
 
-    chunk->boundingBox.min = { (float)chunkX * CHUNK_SIZE_X, 0.0f, (float)chunkZ * CHUNK_SIZE_Z };
-    chunk->boundingBox.max = { (float)chunkX * CHUNK_SIZE_X + CHUNK_SIZE_X, (float)CHUNK_SIZE_Y, (float)chunkZ * CHUNK_SIZE_Z + CHUNK_SIZE_Z };
+    chunk->boundingBox.min = {(float) chunkX * CHUNK_SIZE_X, 0.0f, (float) chunkZ * CHUNK_SIZE_Z};
+    chunk->boundingBox.max = {
+        (float) chunkX * CHUNK_SIZE_X + CHUNK_SIZE_X, (float) CHUNK_SIZE_Y, (float) chunkZ * CHUNK_SIZE_Z + CHUNK_SIZE_Z
+    };
 
     chunk->chunkId = (chunkX & 0xFFFF) | ((chunkZ & 0xFFFF) << 16);
     chunk->loaded = false;
@@ -372,7 +373,7 @@ BlockIds ChunkHelper::getWorldBlock(int worldX, int worldY, int worldZ) {
 
     auto it = activeChunks.find(coord);
     if (it == activeChunks.end() || !it->second) {
-        return ID_AIR;  // Assume air if chunk not loaded
+        return ID_AIR; // Assume air if chunk not loaded
     }
 
     int localX = WorldToLocal(worldX);
@@ -393,7 +394,7 @@ void ChunkHelper::setBiomeFloor(const std::unique_ptr<Chunk> &chunk) {
             int surfaceY = static_cast<int>(chunk->surfaceHeight[x][z]);
 
             BiomeType biomeType = getBiomeAt(wx, wz);
-            const Biome& biome = biomes.at(biomeType);
+            const Biome &biome = biomes.at(biomeType);
 
             // Underwater
             if (surfaceY < WATER_LEVEL) {
@@ -426,15 +427,16 @@ void ChunkHelper::setBiomeFloor(const std::unique_ptr<Chunk> &chunk) {
                 chunk->blockPosition[x][surfaceY][z] = ID_GRASS;
             }
         }
-
     }
 }
+
 // ---- Tree Placement ----
 void ChunkHelper::populateTrees(Chunk &chunk) {
     int baseX = chunk.chunkCoords.x * CHUNK_SIZE_X;
     int baseZ = chunk.chunkCoords.z * CHUNK_SIZE_Z;
 
-    for (int lx = 2; lx < CHUNK_SIZE_X - 2; lx++) {  // Avoid edges
+    for (int lx = 2; lx < CHUNK_SIZE_X - 2; lx++) {
+        // Avoid edges
         for (int lz = 2; lz < CHUNK_SIZE_Z - 2; lz++) {
             int wx = baseX + lx;
             int wz = baseZ + lz;
@@ -473,13 +475,14 @@ void ChunkHelper::populateTrees(Chunk &chunk) {
                             if (chunk.blockPosition[nx][ny][nz] == ID_AIR) {
                                 chunk.blockPosition[nx][ny][nz] = ID_OAK_LEAF;
                             }
-                            }
+                        }
                     }
                 }
             }
         }
     }
 }
+
 // ---- Tree Generation ----
 void ChunkHelper::generateTree(int baseWorldX, int baseWorldY, int baseWorldZ) {
     std::println("Generating trees...");
@@ -506,24 +509,23 @@ float ChunkHelper::LERP(float a, float b, float t) {
 }
 
 
-
-
 // Biome selection functions
 
 float ChunkHelper::getTemperature(int wx, int wz) {
-    float temp = temperatureNoise.GetNoise((float)wx, (float)wz);
+    float temp = temperatureNoise.GetNoise((float) wx, (float) wz);
     return (temp + 1.0f) * 0.5f;
 }
 
 float ChunkHelper::getHumidity(int wx, int wz) {
-    float humid = humidityNoise.GetNoise((float)wx, (float)wz);
+    float humid = humidityNoise.GetNoise((float) wx, (float) wz);
     return (humid + 1.0f) * 0.5f;
 }
 
 float ChunkHelper::getContinentalness(int wx, int wz) {
-    float cont = continentalnessNoise.GetNoise((float)wx, (float)wz);
+    float cont = continentalnessNoise.GetNoise((float) wx, (float) wz);
     return (cont + 1.0f) * 0.5f;
 }
+
 BiomeType ChunkHelper::getBiomeAt(int wx, int wz) {
     float continentalness = getContinentalness(wx, wz);
     float temperature = getTemperature(wx, wz);
