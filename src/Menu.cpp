@@ -4,6 +4,7 @@
 
 #include "../include/Menu.hpp"
 #include <raygui.h>
+#include <string>
 
 #include "Settings.hpp"
 

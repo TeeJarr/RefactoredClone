@@ -17,5 +17,7 @@
 #include <atomic>
 #include <queue>
 #include <unordered_map>
+#include <print>
+#include <condition_variable>
 
 #endif //REFACTOREDCLONE_COMMON_HPP

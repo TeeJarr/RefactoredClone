@@ -14,6 +14,9 @@
 #include "Settings.hpp"
 #include <thread>
 #include <unordered_set>
+#include <string.h>
+#include <iostream>
+#include "Common.hpp"
 
 #include "LightingSystem.hpp"
 #include "MeshThreadPool.hpp"
@@ -1085,6 +1088,7 @@ UVRect Renderer::GetAtlasUV(int tileIndex, int atlasWidth, int atlasHeight, int 
 void Renderer::replaceChunk(const ChunkCoord &coord, std::unique_ptr<Chunk> newChunk) {
     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
 
+try {
     auto it = ChunkHelper::activeChunks.find(coord);
     if (it != ChunkHelper::activeChunks.end() && it->second) {
         if (it->second->opaqueModel.meshCount > 0 && IsModelValid(it->second->opaqueModel)) {
@@ -1097,6 +1101,9 @@ void Renderer::replaceChunk(const ChunkCoord &coord, std::unique_ptr<Chunk> newC
             UnloadModel(it->second->waterModel);
         }
     }
+} catch (...) {
+    std::cerr << "Map access crashed!" << std::endl;
+}
 
     ChunkHelper::activeChunks[coord] = std::move(newChunk);
 }

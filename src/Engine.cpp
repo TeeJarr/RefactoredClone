@@ -129,7 +129,7 @@ void Engine::draw() const {
 
 void Engine::initWindowData() {
     InitWindow(Settings::screenWidth, Settings::screenHeight, "Fakecraft");
-    // SetTargetFPS(Settings::frameRate);
+    SetTargetFPS(Settings::frameRate);
     // DisableCursor();
 }
 
