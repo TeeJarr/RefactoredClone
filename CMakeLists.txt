@@ -21,6 +21,13 @@ add_executable(${PROJECT_NAME} ${SOURCES}
         include/Chunk.hpp
         include/Settings.hpp
         src/Settings.cpp
+        src/Menu.cpp
+        include/Menu.hpp
+        src/LightingSystem.cpp
+        src/LightingSystem.hpp
+        src/MeshThreadPool.cpp
+        src/MeshThreadPool.hpp
+        include/Collision.hpp
 )
 target_link_libraries(${PROJECT_NAME} PUBLIC raylib)
 target_include_directories(${PROJECT_NAME} PUBLIC include)

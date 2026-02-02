@@ -5,6 +5,7 @@
 #include "../include/Chunk.hpp"
 
 #include <algorithm>
+#include "LightingSystem.hpp"
 
 #include "Blocks.hpp"
 #include "Settings.hpp"
@@ -229,10 +230,11 @@ void ChunkHelper::markChunkDirty(const ChunkCoord& coord) {
 
     Chunk* chunk = it->second.get();
     if (!chunk) return;
+    if (chunk->dirty) return;  // Already dirty
+    if (chunk->meshBuilding.load()) return;  // Already rebuilding
 
     chunk->dirty = true;
 }
-
 int ChunkHelper::WorldToChunk(int w) {
     return (w >= 0) ? w / CHUNK_SIZE_X : (w - CHUNK_SIZE_X + 1) / CHUNK_SIZE_X;
 }
@@ -360,6 +362,26 @@ std::unique_ptr<Chunk> ChunkHelper::generateChunkAsync(const Vector3 &chunkPosIn
     return chunk;
 }
 
+// Add to ChunkHelper
+BlockIds ChunkHelper::getWorldBlock(int worldX, int worldY, int worldZ) {
+    if (worldY < 0 || worldY >= CHUNK_SIZE_Y) {
+        return ID_AIR;
+    }
+
+    ChunkCoord coord = worldToChunkCoord(worldX, worldZ);
+
+    auto it = activeChunks.find(coord);
+    if (it == activeChunks.end() || !it->second) {
+        return ID_AIR;  // Assume air if chunk not loaded
+    }
+
+    int localX = WorldToLocal(worldX);
+    int localZ = WorldToLocal(worldZ);
+
+    return static_cast<BlockIds>(it->second->blockPosition[localX][worldY][localZ]);
+}
+
+
 void ChunkHelper::setBiomeFloor(const std::unique_ptr<Chunk> &chunk) {
     int baseX = chunk->chunkCoords.x * CHUNK_SIZE_X;
     int baseZ = chunk->chunkCoords.z * CHUNK_SIZE_Z;
@@ -404,6 +426,7 @@ void ChunkHelper::setBiomeFloor(const std::unique_ptr<Chunk> &chunk) {
                 chunk->blockPosition[x][surfaceY][z] = ID_GRASS;
             }
         }
+
     }
 }
 // ---- Tree Placement ----

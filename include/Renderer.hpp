@@ -68,6 +68,55 @@ static const FaceTemplate FACE_TEMPLATES[6] = {
     {{{0,0,1},{0,0,0},{1,0,0},{1,0,1}}, {0,-1,0}}
 };
 
+struct NeighborEdgeData {
+    std::unique_ptr<uint8_t[]> blocksNegX;
+    std::unique_ptr<uint8_t[]> blocksPosX;
+    std::unique_ptr<uint8_t[]> blocksNegZ;
+    std::unique_ptr<uint8_t[]> blocksPosZ;
+
+    std::unique_ptr<uint8_t[]> lightNegX;
+    std::unique_ptr<uint8_t[]> lightPosX;
+    std::unique_ptr<uint8_t[]> lightNegZ;
+    std::unique_ptr<uint8_t[]> lightPosZ;
+
+    bool hasNegX = false;
+    bool hasPosX = false;
+    bool hasNegZ = false;
+    bool hasPosZ = false;
+
+    NeighborEdgeData() {
+        blocksNegX = std::make_unique<uint8_t[]>(CHUNK_SIZE_Y * CHUNK_SIZE_Z);
+        blocksPosX = std::make_unique<uint8_t[]>(CHUNK_SIZE_Y * CHUNK_SIZE_Z);
+        blocksNegZ = std::make_unique<uint8_t[]>(CHUNK_SIZE_X * CHUNK_SIZE_Y);
+        blocksPosZ = std::make_unique<uint8_t[]>(CHUNK_SIZE_X * CHUNK_SIZE_Y);
+
+        lightNegX = std::make_unique<uint8_t[]>(CHUNK_SIZE_Y * CHUNK_SIZE_Z);
+        lightPosX = std::make_unique<uint8_t[]>(CHUNK_SIZE_Y * CHUNK_SIZE_Z);
+        lightNegZ = std::make_unique<uint8_t[]>(CHUNK_SIZE_X * CHUNK_SIZE_Y);
+        lightPosZ = std::make_unique<uint8_t[]>(CHUNK_SIZE_X * CHUNK_SIZE_Y);
+    }
+
+    // Helper accessors
+    inline uint8_t getBlockNegX(int y, int z) const { return blocksNegX[y * CHUNK_SIZE_Z + z]; }
+    inline uint8_t getBlockPosX(int y, int z) const { return blocksPosX[y * CHUNK_SIZE_Z + z]; }
+    inline uint8_t getBlockNegZ(int x, int y) const { return blocksNegZ[x * CHUNK_SIZE_Y + y]; }
+    inline uint8_t getBlockPosZ(int x, int y) const { return blocksPosZ[x * CHUNK_SIZE_Y + y]; }
+
+    inline uint8_t getLightNegX(int y, int z) const { return lightNegX[y * CHUNK_SIZE_Z + z]; }
+    inline uint8_t getLightPosX(int y, int z) const { return lightPosX[y * CHUNK_SIZE_Z + z]; }
+    inline uint8_t getLightNegZ(int x, int y) const { return lightNegZ[x * CHUNK_SIZE_Y + y]; }
+    inline uint8_t getLightPosZ(int x, int y) const { return lightPosZ[x * CHUNK_SIZE_Y + y]; }
+
+    inline void setBlockNegX(int y, int z, uint8_t v) { blocksNegX[y * CHUNK_SIZE_Z + z] = v; }
+    inline void setBlockPosX(int y, int z, uint8_t v) { blocksPosX[y * CHUNK_SIZE_Z + z] = v; }
+    inline void setBlockNegZ(int x, int y, uint8_t v) { blocksNegZ[x * CHUNK_SIZE_Y + y] = v; }
+    inline void setBlockPosZ(int x, int y, uint8_t v) { blocksPosZ[x * CHUNK_SIZE_Y + y] = v; }
+
+    inline void setLightNegX(int y, int z, uint8_t v) { lightNegX[y * CHUNK_SIZE_Z + z] = v; }
+    inline void setLightPosX(int y, int z, uint8_t v) { lightPosX[y * CHUNK_SIZE_Z + z] = v; }
+    inline void setLightNegZ(int x, int y, uint8_t v) { lightNegZ[x * CHUNK_SIZE_Y + y] = v; }
+    inline void setLightPosZ(int x, int y, uint8_t v) { lightPosZ[x * CHUNK_SIZE_Y + y] = v; }
+};
 inline float FACE_LIGHT[6] = {0.9f, 0.9f, 0.8f, 0.8f, 1.0f, 0.6f};
 class Renderer {
 public:
@@ -80,7 +129,18 @@ public:
         FACE_BACK,
     };
 
-    static std::vector<std::thread> workers;
+
+    static NeighborEdgeData cacheNeighborEdges(const ChunkCoord& coord);
+
+     static void buildMeshData(Chunk &chunk, const NeighborEdgeData &neighbors);
+
+     static void uploadPendingMeshes();
+
+     static ChunkMeshTriple buildChunkMeshesInternal(const Chunk &chunk, const NeighborEdgeData &neighbors);
+
+     static void uploadMeshToGPU(Chunk &chunk, const ChunkMeshTriple &meshData);
+
+     static std::vector<std::thread> workers;
 
     static UVRect GetAtlasUV(int tileIndex, int atlasWidth, int atlasHeight, int tileWidth, int tileHeight);
 
@@ -143,12 +203,18 @@ public:
     // In Chunk.hpp
     static void rebuildDirtyChunks();
 
-     static bool isFaceExposed(const Chunk &chunk, int x, int y, int z, int face, bool isTranslucent);
+     static Model createModelFromBuffers(const ChunkMeshBuffers &buf, const ChunkCoord &coord);
+
+     static void buildChunkMeshAsync(Chunk &chunk);
+
+     static void uploadMeshToGPU(Chunk &chunk);
+
+     static bool isFaceExposed(const Chunk &chunk, int x, int y, int z, int face, bool isTranslucent, const NeighborEdgeData &neighbors);
 
     static ChunkMeshTriple buildChunkMeshes(const Chunk &chunk);
 
      static void AddFaceWithAlpha(ChunkMeshBuffers &buf, const Vector3 &blockPos, int face, const BlockTextureDef &def,
-                                  float lightLevel, Color tint, unsigned char alpha);
+                                  float lightLevel, Color tint, unsigned char alpha, const Chunk &chunk, const NeighborEdgeData &neighbors);
 
     static Model buildModelFromBuffers(ChunkMeshBuffers &buf);
     static void drawChunkOpaque(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera);
@@ -170,7 +236,14 @@ public:
     static int waterTimeLoc;
 
     static void initWaterShader();
-    static void updateWaterShader(float time);};
+    static void updateWaterShader(float time);
+
+     static float getVertexLight(const Chunk &chunk, int bx, int by, int bz, int face, int vertex, const NeighborEdgeData &neighbors);
+
+     static void initMeshThreadPool(int threads);
+
+     static void shutdownMeshThreadPool();
+};
 
 // In Renderer.hpp - add these declarations
 

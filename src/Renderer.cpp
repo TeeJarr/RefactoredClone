@@ -15,6 +15,9 @@
 #include <thread>
 #include <unordered_set>
 
+#include "LightingSystem.hpp"
+#include "MeshThreadPool.hpp"
+
 constexpr float TILE_WIDTH = 160.0f;
 constexpr float TILE_HEIGHT = 160.0f;
 constexpr float ATLAS_WIDTH = 160.0f;
@@ -23,64 +26,342 @@ constexpr float ATLAS_HEIGHT = 64000.0f;
 Texture2D Renderer::textureAtlas = {};
 std::vector<std::thread> Renderer::workers;
 
+
+NeighborEdgeData Renderer::cacheNeighborEdges(const ChunkCoord& coord) {
+    NeighborEdgeData data;
+
+    // std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+
+    // Cache -X neighbor's right edge
+    auto it = ChunkHelper::activeChunks.find({coord.x - 1, coord.z});
+    if (it != ChunkHelper::activeChunks.end() && it->second) {
+        data.hasNegX = true;
+        for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+            for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+                data.setBlockNegX(y, z, it->second->blockPosition[CHUNK_SIZE_X - 1][y][z]);
+                data.setLightNegX(y, z, it->second->getLightLevel(CHUNK_SIZE_X - 1, y, z));
+            }
+        }
+    }
+
+    // Cache +X neighbor's left edge
+    it = ChunkHelper::activeChunks.find({coord.x + 1, coord.z});
+    if (it != ChunkHelper::activeChunks.end() && it->second) {
+        data.hasPosX = true;
+        for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+            for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+                data.setBlockPosX(y, z, it->second->blockPosition[0][y][z]);
+                data.setLightPosX(y, z, it->second->getLightLevel(0, y, z));
+            }
+        }
+    }
+
+    // Cache -Z neighbor's back edge
+    it = ChunkHelper::activeChunks.find({coord.x, coord.z - 1});
+    if (it != ChunkHelper::activeChunks.end() && it->second) {
+        data.hasNegZ = true;
+        for (int x = 0; x < CHUNK_SIZE_X; x++) {
+            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+                data.setBlockNegZ(x, y, it->second->blockPosition[x][y][CHUNK_SIZE_Z - 1]);
+                data.setLightNegZ(x, y, it->second->getLightLevel(x, y, CHUNK_SIZE_Z - 1));
+            }
+        }
+    }
+
+    // Cache +Z neighbor's front edge
+    it = ChunkHelper::activeChunks.find({coord.x, coord.z + 1});
+    if (it != ChunkHelper::activeChunks.end() && it->second) {
+        data.hasPosZ = true;
+        for (int x = 0; x < CHUNK_SIZE_X; x++) {
+            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+                data.setBlockPosZ(x, y, it->second->blockPosition[x][y][0]);
+                data.setLightPosZ(x, y, it->second->getLightLevel(x, y, 0));
+            }
+        }
+    }
+
+    return data;
+}
+
+
+void Renderer::buildMeshData(Chunk& chunk, const NeighborEdgeData& neighbors) {
+    auto meshData = std::make_unique<ChunkMeshTriple>();
+    *meshData = buildChunkMeshesInternal(chunk, neighbors);
+
+    chunk.pendingMeshData = std::move(meshData);
+    chunk.meshReady = true;
+}
+
+// void Renderer::uploadPendingMeshes() {
+//     printf("DEBUG: uploadPendingMeshes called\n");
+//
+//     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+//
+//     int checked = 0;
+//     int uploaded = 0;
+//
+//     for (auto& [coord, chunk] : ChunkHelper::activeChunks) {
+//         checked++;
+//         if (!chunk) continue;
+//
+//         printf("DEBUG: Chunk (%d,%d) meshReady=%d meshBuilding=%d\n",
+//                coord.x, coord.z, chunk->meshReady.load(), chunk->meshBuilding.load());
+//
+//         if (!chunk->meshReady) continue;
+//
+//         printf("DEBUG: Uploading mesh for (%d, %d)\n", coord.x, coord.z);
+//         uploadMeshToGPU(*chunk, *chunk->pendingMeshData);
+//
+//         chunk->pendingMeshData.reset();
+//         chunk->meshReady = false;
+//         chunk->loaded = true;
+//         uploaded++;
+//
+//         if (uploaded >= 2) break;
+//     }
+//
+//     printf("DEBUG: Checked %d chunks, uploaded %d\n", checked, uploaded);
+// }
+// This is your existing buildChunkMeshes, just renamed
+ChunkMeshTriple Renderer::buildChunkMeshesInternal(const Chunk &chunk, const NeighborEdgeData& neighbors) {
+    ChunkMeshTriple meshes;
+
+    meshes.opaque.reserve(3000);
+    meshes.translucent.reserve(500);
+    meshes.water.reserve(500);
+
+    for (int x = 0; x < CHUNK_SIZE_X; x++) {
+        for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+                BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
+                if (id == ID_AIR) continue;
+
+                auto defIt = blockTextureDefs.find(id);
+                if (defIt == blockTextureDefs.end()) continue;
+
+                const BlockTextureDef &def = defIt->second;
+                unsigned char alpha = getBlockAlpha(id);
+                bool isTranslucent = isBlockTranslucent(id);
+
+                ChunkMeshBuffers *buf;
+                if (id == ID_WATER) {
+                    buf = &meshes.water;
+                } else if (isTranslucent) {
+                    buf = &meshes.translucent;
+                } else {
+                    buf = &meshes.opaque;
+                }
+
+                for (int f = 0; f < 6; f++) {
+                    if (!isFaceExposed(chunk, x, y, z, f, isTranslucent, neighbors)) continue;
+
+                    Color faceTint = getBlockFaceTint(id, f);
+                    AddFaceWithAlpha(*buf, {(float)x, (float)y, (float)z},
+                                     f, def, FACE_LIGHT[f], faceTint, alpha, chunk, neighbors);
+                }
+            }
+        }
+    }
+
+    return meshes;
+}
+
+void Renderer::uploadMeshToGPU(Chunk& chunk, const ChunkMeshTriple& meshData) {
+    // Unload old models
+    if (chunk.opaqueModel.meshCount > 0 && IsModelValid(chunk.opaqueModel)) {
+        UnloadModel(chunk.opaqueModel);
+        chunk.opaqueModel = {0};
+    }
+    if (chunk.translucentModel.meshCount > 0 && IsModelValid(chunk.translucentModel)) {
+        UnloadModel(chunk.translucentModel);
+        chunk.translucentModel = {0};
+    }
+    if (chunk.waterModel.meshCount > 0 && IsModelValid(chunk.waterModel)) {
+        UnloadModel(chunk.waterModel);
+        chunk.waterModel = {0};
+    }
+
+    // Upload opaque mesh
+    if (!meshData.opaque.vertices.empty()) {
+        chunk.opaqueModel = createModelFromBuffers(meshData.opaque, chunk.chunkCoords);
+    }
+
+    // Upload translucent mesh
+    if (!meshData.translucent.vertices.empty()) {
+        chunk.translucentModel = createModelFromBuffers(meshData.translucent, chunk.chunkCoords);
+    }
+
+    // Upload water mesh
+    if (!meshData.water.vertices.empty()) {
+        chunk.waterModel = createModelFromBuffers(meshData.water, chunk.chunkCoords);
+    }
+}
+
+// Model Renderer::createModelFromBuffers(const ChunkMeshBuffers& buf, const ChunkCoord& coord) {
+//     Mesh mesh = {0};
+//
+//     mesh.vertexCount = buf.vertices.size() / 3;
+//     mesh.triangleCount = buf.indices.size() / 3;
+//
+//     // Allocate and copy vertex data
+//     mesh.vertices = (float*)MemAlloc(buf.vertices.size() * sizeof(float));
+//     memcpy(mesh.vertices, buf.vertices.data(), buf.vertices.size() * sizeof(float));
+//
+//     mesh.normals = (float*)MemAlloc(buf.normals.size() * sizeof(float));
+//     memcpy(mesh.normals, buf.normals.data(), buf.normals.size() * sizeof(float));
+//
+//     mesh.texcoords = (float*)MemAlloc(buf.texcoords.size() * sizeof(float));
+//     memcpy(mesh.texcoords, buf.texcoords.data(), buf.texcoords.size() * sizeof(float));
+//
+//     mesh.colors = (unsigned char*)MemAlloc(buf.colors.size() * sizeof(unsigned char));
+//     memcpy(mesh.colors, buf.colors.data(), buf.colors.size() * sizeof(unsigned char));
+//
+//     mesh.indices = (unsigned short*)MemAlloc(buf.indices.size() * sizeof(unsigned short));
+//     memcpy(mesh.indices, buf.indices.data(), buf.indices.size() * sizeof(unsigned short));
+//
+//     // Upload to GPU
+//     UploadMesh(&mesh, false);
+//
+//     // Create model
+//     Model model = LoadModelFromMesh(mesh);
+//     model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = textureAtlas;
+//
+//     // Position the model
+//     model.transform = MatrixTranslate(
+//         coord.x * CHUNK_SIZE_X,
+//         0,
+//         coord.z * CHUNK_SIZE_Z
+//     );
+//
+//     return model;
+// }
+
+// void Renderer::buildChunkMeshAsync(Chunk& chunk) {
+//     if (chunk.meshBuilding.exchange(true)) return;  // Already building
+//
+//     // Cache neighbors (need lock here since we're on worker thread)
+//     NeighborEdgeData neighbors = cacheNeighborEdges(chunk.chunkCoords);
+//
+//     // Build mesh data (CPU only, no OpenGL)
+//     auto meshData = std::make_unique<ChunkMeshTriple>();
+//     *meshData = buildChunkMeshesInternal(chunk, neighbors);
+//
+//     // Store result
+//     chunk.pendingMeshData = std::move(meshData);
+//     chunk.meshBuilding = false;
+//     chunk.meshReady = true;
+// }
+//
+// // Call this every frame on main thread
+// void Renderer::processChunkBuildQueue(const Camera3D &camera) {
+//     constexpr int MAX_CHUNKS_PER_FRAME = 2;
+//     int processed = 0;
+//
+//     while (processed < MAX_CHUNKS_PER_FRAME) {
+//         std::unique_ptr<Chunk> chunk;
+//         if (!ChunkHelper::chunkBuildQueue.try_pop(chunk)) {
+//             printf("DEBUG: No chunks in queue\n");
+//             break;
+//         }
+//         if (!chunk) {
+//             printf("DEBUG: Chunk is null\n");
+//             continue;
+//         }
+//         ChunkCoord playerChunk = getPlayerChunkCoord(camera);
+//         int dx = abs(chunk->chunkCoords.x - playerChunk.x);
+//         int dz = abs(chunk->chunkCoords.z - playerChunk.z);
+//         if (dx > Settings::preLoadDistance || dz > Settings::preLoadDistance) {
+//             ChunkHelper::chunkBuildQueue.push(std::move(chunk));
+//             break;
+//         }
+//
+//         ChunkCoord coord = chunk->chunkCoords;
+//         printf("DEBUG: Processing chunk (%d, %d)\n", chunk->chunkCoords.x, chunk->chunkCoords.z);
+//
+//         // Calculate lighting (fast, do on main thread)
+//         LightingSystem::calculateSkyLight(*chunk);
+//         LightingSystem::calculateBlockLight(*chunk);
+//
+//         // Spread light from neighbors
+//         {
+//             std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+//             auto& activeChunks = ChunkHelper::activeChunks;
+//             if (activeChunks.count({coord.x - 1, coord.z})) {
+//                 LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x - 1, coord.z}], 0);
+//             }
+//             if (activeChunks.count({coord.x + 1, coord.z})) {
+//                 LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x + 1, coord.z}], 1);
+//             }
+//             if (activeChunks.count({coord.x, coord.z - 1})) {
+//                 LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x, coord.z - 1}], 2);
+//             }
+//             if (activeChunks.count({coord.x, coord.z + 1})) {
+//                 LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x, coord.z + 1}], 3);
+//             }
+//         }
+//
+//         // Add to active chunks first
+//         replaceChunk(coord, std::move(chunk));
+//
+//         // Submit mesh building to thread pool
+//         printf("DEBUG: Submitting to thread pool\n");
+//         g_meshThreadPool.submit([coord]() {
+//             printf("DEBUG: Thread pool task started for (%d, %d)\n", coord.x, coord.z);
+//             std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+//             auto it = ChunkHelper::activeChunks.find(coord);
+//             if (it != ChunkHelper::activeChunks.end() && it->second) {
+//                 Renderer::buildChunkMeshAsync(*it->second);
+//             }
+//         });
+//
+//         // Mark neighbors dirty
+//         ChunkHelper::markChunkDirty({coord.x - 1, coord.z});
+//         ChunkHelper::markChunkDirty({coord.x + 1, coord.z});
+//         ChunkHelper::markChunkDirty({coord.x, coord.z - 1});
+//         ChunkHelper::markChunkDirty({coord.x, coord.z + 1});
+//
+//         processed++;
+//     }
+// }
 // Update isFaceExposed to handle translucent blocks properly
-bool Renderer::isFaceExposed(const Chunk &chunk, int x, int y, int z, int face, bool isTranslucent) {
+
+bool Renderer::isFaceExposed(const Chunk &chunk, int x, int y, int z, int face,
+                              bool isTranslucent, const NeighborEdgeData& neighbors) {
     int nx = x + dx[face];
     int ny = y + dy[face];
     int nz = z + dz[face];
 
-    if (nx < 0 || nx >= CHUNK_SIZE_X ||
-        ny < 0 || ny >= CHUNK_SIZE_Y ||
-        nz < 0 || nz >= CHUNK_SIZE_Z)
-        return true;
+    if (ny < 0 || ny >= CHUNK_SIZE_Y) return true;
 
-    int neighborId = chunk.blockPosition[nx][ny][nz];
+    int neighborId;
+
+ if (nx < 0) {
+        if (!neighbors.hasNegX) return true;  // CHANGE: Show face if no neighbor data
+        neighborId = neighbors.getBlockNegX(ny, nz);
+    } else if (nx >= CHUNK_SIZE_X) {
+        if (!neighbors.hasPosX) return true;  // CHANGE: Show face if no neighbor data
+        neighborId = neighbors.getBlockPosX(ny, nz);
+    } else if (nz < 0) {
+        if (!neighbors.hasNegZ) return true;  // CHANGE: Show face if no neighbor data
+        neighborId = neighbors.getBlockNegZ(nx, ny);
+    } else if (nz >= CHUNK_SIZE_Z) {
+        if (!neighbors.hasPosZ) return true;  // CHANGE: Show face if no neighbor data
+        neighborId = neighbors.getBlockPosZ(nx, ny);
+    } else {
+        neighborId = chunk.blockPosition[nx][ny][nz];
+    }
 
     if (neighborId == ID_AIR) return true;
 
-    // If current block is translucent
     if (isTranslucent) {
-        // Don't render face between same translucent blocks (e.g., water-water)
         int currentId = chunk.blockPosition[x][y][z];
         if (neighborId == currentId) return false;
-        // Render face if neighbor is different
         return true;
     }
 
-    // Opaque block: show face if neighbor is translucent or air
-    return isBlockTranslucent(neighborId);
+    return isBlockTranslucent(static_cast<BlockIds>(neighborId));
 }
 
-// Build separate meshes for opaque and translucent
-// ChunkMeshPair Renderer::buildChunkMeshes(const Chunk &chunk) {
-//     ChunkMeshPair pair;
-//
-//     for (int x = 0; x < CHUNK_SIZE_X; x++) {
-//         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
-//             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-//                 BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
-//                 if (id == ID_AIR) continue;
-//
-//                 auto def = blockTextureDefs.at(id);
-//                 bool translucent = isBlockTranslucent(id);
-//                 unsigned char alpha = getBlockAlpha(id);
-//
-//                 // Choose which buffer to add to
-//                 ChunkMeshBuffers &buf = translucent ? pair.translucent : pair.opaque;
-//
-//                 for (int f = 0; f < 6; f++) {
-//                     if (!isFaceExposed(chunk, x, y, z, f, translucent)) continue;
-//
-//                     AddFaceWithAlpha(buf,
-//                         (Vector3){(float)x, (float)y, (float)z},
-//                         f, def, FACE_LIGHT[f], def.tint, alpha);
-//                 }
-//             }
-//         }
-//     }
-//
-//     return pair;
-// }
 
 // Modified AddFace that supports alpha
 void Renderer::AddFaceWithAlpha(
@@ -90,7 +371,9 @@ void Renderer::AddFaceWithAlpha(
     const BlockTextureDef &def,
     float lightLevel,
     Color tint,
-    unsigned char alpha
+    unsigned char alpha,
+    const Chunk &chunk,
+    const NeighborEdgeData &neighbors  // ADD THIS
 ) {
     static const Vector3 FACE_VERTS[6][4] = {
         {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, // Front (-Z)
@@ -132,10 +415,15 @@ void Renderer::AddFaceWithAlpha(
         buf.texcoords.push_back(u);
         buf.texcoords.push_back(tv);
 
-        // Apply tint and lighting
-        unsigned char r = (unsigned char)(tint.r * lightLevel);
-        unsigned char g = (unsigned char)(tint.g * lightLevel);
-        unsigned char b = (unsigned char)(tint.b * lightLevel);
+        // Updated to use neighbors
+        float vertexLight = getVertexLight(chunk,
+            (int)blockPos.x, (int)blockPos.y, (int)blockPos.z, face, v, neighbors);
+
+        float combinedLight = vertexLight * FACE_LIGHT[face];
+
+        unsigned char r = (unsigned char)(tint.r * combinedLight);
+        unsigned char g = (unsigned char)(tint.g * combinedLight);
+        unsigned char b = (unsigned char)(tint.b * combinedLight);
 
         buf.colors.push_back(r);
         buf.colors.push_back(g);
@@ -150,10 +438,12 @@ void Renderer::AddFaceWithAlpha(
     buf.indices.push_back(indexOffset + 3);
     buf.indices.push_back(indexOffset + 2);
 }
-
 // Update buildChunkMeshes to use tints
 ChunkMeshTriple Renderer::buildChunkMeshes(const Chunk &chunk) {
     ChunkMeshTriple meshes;
+
+    // Cache neighbor data ONCE at the start
+    NeighborEdgeData neighbors = cacheNeighborEdges(chunk.chunkCoords);
 
     for (int x = 0; x < CHUNK_SIZE_X; x++) {
         for (int z = 0; z < CHUNK_SIZE_Z; z++) {
@@ -164,27 +454,25 @@ ChunkMeshTriple Renderer::buildChunkMeshes(const Chunk &chunk) {
                 auto defIt = blockTextureDefs.find(id);
                 if (defIt == blockTextureDefs.end()) continue;
 
-                const BlockTextureDef& def = defIt->second;
+                const BlockTextureDef &def = defIt->second;
                 unsigned char alpha = getBlockAlpha(id);
+                bool isTranslucent = isBlockTranslucent(id);
 
-                // Choose which buffer
-                ChunkMeshBuffers* buf;
+                ChunkMeshBuffers *buf;
                 if (id == ID_WATER) {
                     buf = &meshes.water;
-                } else if (isBlockTranslucent(id)) {
+                } else if (isTranslucent) {
                     buf = &meshes.translucent;
                 } else {
                     buf = &meshes.opaque;
                 }
 
                 for (int f = 0; f < 6; f++) {
-                    if (!isFaceExposed(chunk, x, y, z, f)) continue;
+                    if (!isFaceExposed(chunk, x, y, z, f, isTranslucent, neighbors)) continue;
 
                     Color faceTint = getBlockFaceTint(id, f);
-
-                    AddFaceWithAlpha(*buf,
-                        (Vector3){(float)x, (float)y, (float)z},
-                        f, def, FACE_LIGHT[f], faceTint, alpha);
+                    AddFaceWithAlpha(*buf, {(float)x, (float)y, (float)z},
+                                     f, def, FACE_LIGHT[f], faceTint, alpha, chunk, neighbors);
                 }
             }
         }
@@ -192,15 +480,16 @@ ChunkMeshTriple Renderer::buildChunkMeshes(const Chunk &chunk) {
 
     return meshes;
 }
+
 void Renderer::buildChunkModel(const Chunk &chunk) {
     ChunkMeshTriple meshes = buildChunkMeshes(chunk);
 
     // Debug output
     std::println("Chunk ({}, {}) - opaque: {}, translucent: {}, water: {}",
-        chunk.chunkCoords.x, chunk.chunkCoords.z,
-        meshes.opaque.vertices.size() / 3,
-        meshes.translucent.vertices.size() / 3,
-        meshes.water.vertices.size() / 3);
+                 chunk.chunkCoords.x, chunk.chunkCoords.z,
+                 meshes.opaque.vertices.size() / 3,
+                 meshes.translucent.vertices.size() / 3,
+                 meshes.water.vertices.size() / 3);
 
     // Build opaque model
     if (chunk.opaqueModel.meshCount > 0 && IsModelValid(chunk.opaqueModel)) {
@@ -234,15 +523,16 @@ void Renderer::buildChunkModel(const Chunk &chunk) {
         std::println("No water vertices - model not built");
     }
 }
+
 void Renderer::drawChunkTranslucent(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera) {
     if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
     if (!chunk->loaded) return;
     if (chunk->translucentModel.meshCount == 0) return;
 
     Vector3 worldPos = {
-        (float)(chunk->chunkCoords.x * CHUNK_SIZE_X),
+        (float) (chunk->chunkCoords.x * CHUNK_SIZE_X),
         0.0f,
-        (float)(chunk->chunkCoords.z * CHUNK_SIZE_Z)
+        (float) (chunk->chunkCoords.z * CHUNK_SIZE_Z)
     };
 
     // NO shader - just regular rendering for leaves/glass
@@ -255,9 +545,9 @@ void Renderer::drawChunkWater(const std::unique_ptr<Chunk> &chunk, const Camera3
     if (chunk->waterModel.meshCount == 0) return;
 
     Vector3 worldPos = {
-        (float)(chunk->chunkCoords.x * CHUNK_SIZE_X),
+        (float) (chunk->chunkCoords.x * CHUNK_SIZE_X),
         0.0f,
-        (float)(chunk->chunkCoords.z * CHUNK_SIZE_Z)
+        (float) (chunk->chunkCoords.z * CHUNK_SIZE_Z)
     };
 
     // Apply water shader only to water
@@ -265,6 +555,7 @@ void Renderer::drawChunkWater(const std::unique_ptr<Chunk> &chunk, const Camera3
 
     DrawModel(chunk->waterModel, worldPos, 1.0f, WHITE);
 }
+
 Model Renderer::buildModelFromBuffers(ChunkMeshBuffers &buf) {
     if (buf.vertices.empty()) {
         return {0};
@@ -274,19 +565,19 @@ Model Renderer::buildModelFromBuffers(ChunkMeshBuffers &buf) {
     mesh.vertexCount = buf.vertices.size() / 3;
     mesh.triangleCount = buf.indices.size() / 3;
 
-    mesh.vertices = (float *)MemAlloc(buf.vertices.size() * sizeof(float));
+    mesh.vertices = (float *) MemAlloc(buf.vertices.size() * sizeof(float));
     memcpy(mesh.vertices, buf.vertices.data(), buf.vertices.size() * sizeof(float));
 
-    mesh.normals = (float *)MemAlloc(buf.normals.size() * sizeof(float));
+    mesh.normals = (float *) MemAlloc(buf.normals.size() * sizeof(float));
     memcpy(mesh.normals, buf.normals.data(), buf.normals.size() * sizeof(float));
 
-    mesh.texcoords = (float *)MemAlloc(buf.texcoords.size() * sizeof(float));
+    mesh.texcoords = (float *) MemAlloc(buf.texcoords.size() * sizeof(float));
     memcpy(mesh.texcoords, buf.texcoords.data(), buf.texcoords.size() * sizeof(float));
 
-    mesh.colors = (unsigned char *)MemAlloc(buf.colors.size());
+    mesh.colors = (unsigned char *) MemAlloc(buf.colors.size());
     memcpy(mesh.colors, buf.colors.data(), buf.colors.size());
 
-    mesh.indices = (unsigned short *)MemAlloc(buf.indices.size() * sizeof(unsigned short));
+    mesh.indices = (unsigned short *) MemAlloc(buf.indices.size() * sizeof(unsigned short));
     memcpy(mesh.indices, buf.indices.data(), buf.indices.size() * sizeof(unsigned short));
 
     UploadMesh(&mesh, true);
@@ -306,13 +597,13 @@ void Renderer::drawChunkOpaque(const std::unique_ptr<Chunk> &chunk, const Camera
     if (chunk->alpha > 1.0f) chunk->alpha = 1.0f;
 
     Vector3 worldPos = {
-        (float)(chunk->chunkCoords.x * CHUNK_SIZE_X),
+        (float) (chunk->chunkCoords.x * CHUNK_SIZE_X),
         0.0f,
-        (float)(chunk->chunkCoords.z * CHUNK_SIZE_Z)
+        (float) (chunk->chunkCoords.z * CHUNK_SIZE_Z)
     };
 
     Color tint = WHITE;
-    tint.a = (unsigned char)(chunk->alpha * 255);
+    tint.a = (unsigned char) (chunk->alpha * 255);
 
     if (chunk->opaqueModel.meshCount > 0) {
         DrawModel(chunk->opaqueModel, worldPos, 1.0f, tint);
@@ -323,22 +614,22 @@ void Renderer::drawChunkOpaque(const std::unique_ptr<Chunk> &chunk, const Camera
 // Main draw function that handles render order
 void Renderer::drawAllChunks(const Camera3D &camera) {
     // First pass: draw all opaque geometry
-    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
+    for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
         if (chunk) {
             drawChunkOpaque(chunk, camera);
         }
     }
 
     // Sort translucent chunks by distance from camera (back to front)
-    std::vector<std::pair<float, ChunkCoord>> translucentChunks;
-    std::vector<std::pair<float, ChunkCoord>> waterChunks;
+    std::vector<std::pair<float, ChunkCoord> > translucentChunks;
+    std::vector<std::pair<float, ChunkCoord> > waterChunks;
 
-    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
+    for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
         if (chunk && chunk->translucentModel.meshCount > 0 || chunk->waterModel.meshCount > 0) {
             Vector3 chunkCenter = {
-                (float)(coord.x * CHUNK_SIZE_X + CHUNK_SIZE_X / 2),
+                (float) (coord.x * CHUNK_SIZE_X + CHUNK_SIZE_X / 2),
                 CHUNK_SIZE_Y / 2.0f,
-                (float)(coord.z * CHUNK_SIZE_Z + CHUNK_SIZE_Z / 2)
+                (float) (coord.z * CHUNK_SIZE_Z + CHUNK_SIZE_Z / 2)
             };
             float dist = Vector3DistanceSqr(camera.position, chunkCenter);
             translucentChunks.push_back({dist, coord});
@@ -347,15 +638,15 @@ void Renderer::drawAllChunks(const Camera3D &camera) {
 
     // Sort back to front (furthest first)
     std::sort(translucentChunks.begin(), translucentChunks.end(),
-        [](const auto &a, const auto &b) { return a.first > b.first; });
+              [](const auto &a, const auto &b) { return a.first > b.first; });
 
     // Enable blending for translucent geometry
-    rlDisableDepthMask();  // Don't write to depth buffer for translucent
+    rlDisableDepthMask(); // Don't write to depth buffer for translucent
     rlEnableColorBlend();
     rlSetBlendMode(BLEND_ALPHA);
 
     // Second pass: draw translucent geometry back to front
-    for (auto &[dist, coord] : translucentChunks) {
+    for (auto &[dist, coord]: translucentChunks) {
         auto it = ChunkHelper::activeChunks.find(coord);
         if (it != ChunkHelper::activeChunks.end() && it->second) {
             if (it->second->translucentModel.meshCount > 0) {
@@ -373,26 +664,6 @@ void Renderer::drawAllChunks(const Camera3D &camera) {
 }
 
 
-// void Renderer::drawChunk(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera) {
-//     if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
-//     if (!chunk->loaded) return;
-//
-//
-//     chunk->alpha += GetFrameTime() * 2.0f; // fade-in over ~0.5 seconds
-//     if (chunk->alpha > 1.0f) chunk->alpha = 1.0f;
-//
-//     Vector3 worldPos = {
-//         (float) (chunk->chunkCoords.x * CHUNK_SIZE_X),
-//         0.0f,
-//         (float) (chunk->chunkCoords.z * CHUNK_SIZE_Z)
-//     };
-//
-//     Color tint = WHITE;
-//     tint.a = (unsigned char) (chunk->alpha * 255);
-//
-//     // std::println("Drawing chunk: {}, {}", chunk->chunkCoords.x, chunk->chunkCoords.z);
-//     DrawModel(chunk->model, worldPos, 1.0f, tint);
-// }
 
 UVRect Renderer::GetTileUV(int tileIndex, int atlasWidth, int atlasHeight, int tileSize) {
     float u0 = 0.0f;
@@ -545,34 +816,37 @@ bool Renderer::IsBoxInFrustum(const BoundingBox &box, const Plane planes[6]) {
 void Renderer::checkActiveChunks(const Camera3D &camera) {
     ChunkCoord playerChunk = getPlayerChunkCoord(camera);
 
-    for (int dx = -Settings::preLoadDistance; dx <= Settings::preLoadDistance; dx++) {
-        for (int dz = -Settings::preLoadDistance; dz <= Settings::preLoadDistance; dz++) {
-            ChunkCoord coord{
-                playerChunk.x + dx,
-                playerChunk.z + dz
-            };
+    // Collect all coords to check first
+    std::vector<ChunkCoord> coordsToRequest;
 
-            {
-                std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
-                if (ChunkHelper::activeChunks.contains(coord))
-                    continue;
-            }
+    // Single lock for checking active chunks
+    {
+        std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+        std::lock_guard<std::mutex> lock2(ChunkHelper::chunkRequestSetMutex);
 
-            {
-                std::lock_guard<std::mutex> lock(ChunkHelper::chunkRequestSetMutex);
-                if (ChunkHelper::chunkRequestSet.contains(coord))
-                    continue;
+        for (int dx = -Settings::preLoadDistance; dx <= Settings::preLoadDistance; dx++) {
+            for (int dz = -Settings::preLoadDistance; dz <= Settings::preLoadDistance; dz++) {
+                ChunkCoord coord{playerChunk.x + dx, playerChunk.z + dz};
+
+                if (ChunkHelper::activeChunks.contains(coord)) continue;
+                if (ChunkHelper::chunkRequestSet.contains(coord)) continue;
 
                 ChunkHelper::chunkRequestSet.insert(coord);
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(ChunkHelper::chunkRequestQueueMtx);
-                ChunkHelper::chunkRequestQueue.push(coord);
+                coordsToRequest.push_back(coord);
             }
         }
     }
+
+    // Single lock for pushing to queue
+    if (!coordsToRequest.empty()) {
+        std::lock_guard<std::mutex> lock(ChunkHelper::chunkRequestQueueMtx);
+        for (const auto& coord : coordsToRequest) {
+            ChunkHelper::chunkRequestQueue.push(coord);
+        }
+    }
+
 }
+
 
 #include <cassert>
 
@@ -584,7 +858,7 @@ void Renderer::unloadChunks(const Camera3D &camera) {
 
     std::vector<ChunkCoord> toRemove;
 
-    for (const auto &[coord, chunk] : ChunkHelper::activeChunks) {
+    for (const auto &[coord, chunk]: ChunkHelper::activeChunks) {
         int dx = coord.x - playerChunk.x;
         int dz = coord.z - playerChunk.z;
 
@@ -596,7 +870,7 @@ void Renderer::unloadChunks(const Camera3D &camera) {
         }
     }
 
-    for (const auto &coord : toRemove) {
+    for (const auto &coord: toRemove) {
         auto it = ChunkHelper::activeChunks.find(coord);
         if (it == ChunkHelper::activeChunks.end()) continue;
 
@@ -620,13 +894,13 @@ void Renderer::shutdown() {
     ChunkHelper::workerRunning = false;
     ChunkHelper::chunkRequestQueue.notifyAll();
 
-    for (auto &t : Renderer::workers) {
+    for (auto &t: Renderer::workers) {
         if (t.joinable()) t.join();
     }
     Renderer::workers.clear();
 
     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
-    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
+    for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
         if (!chunk) continue;
 
         if (chunk->opaqueModel.meshCount > 0 && IsModelValid(chunk->opaqueModel)) {
@@ -643,147 +917,12 @@ void Renderer::shutdown() {
         textureAtlas.id = 0;
     }
 }
+
 int Renderer::worldToChunk(float v, int chunkSize) {
     int i = (int) floor(v);
     return (i >= 0) ? (i / chunkSize) : ((i - chunkSize + 1) / chunkSize);
 }
 
-// void Renderer::renderAsyncChunks() {
-//     while (!ChunkHelper::chunkBuildQueue.empty()) {
-//         std::unique_ptr<Chunk> chunk;
-//         while (ChunkHelper::chunkBuildQueue.try_pop(chunk)) {
-//             chunk->model = buildChunkModel(*chunk);
-//             chunk->loaded = true;
-//             chunk->alpha = 0.0f;
-//
-//             replaceChunk(chunk->chunkCoords, std::move(chunk));
-//         }
-//     }
-// }
-
-// void Renderer::shutdown() {
-//     // Stop workers first
-//     ChunkHelper::workerRunning = false;
-//     ChunkHelper::chunkRequestQueue.notifyAll();
-//
-//     for (auto &t: Renderer::workers) {
-//         if (t.joinable()) t.join();
-//     }
-//     Renderer::workers.clear();
-//
-//     // Unload all active chunks safely
-//     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
-//     for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
-//         if (!chunk) continue;
-//
-//         // Only unload if meshCount > 0
-//         if (chunk->model.meshCount > 0 && IsModelValid(chunk->model)) {
-//             UnloadModel(chunk->model);
-//             chunk->model.meshCount = 0; // mark as unloaded
-//         }
-//     }
-//     ChunkHelper::activeChunks.clear();
-//
-//     // Unload texture atlas safely
-//     if (textureAtlas.id > 0 && IsTextureValid(textureAtlas)) {
-//         UnloadTexture(textureAtlas);
-//         textureAtlas.id = 0;
-//     }
-// }
-
-// void Renderer::chunkWorkerThread() {
-//     while (ChunkHelper::workerRunning) {
-//         std::optional<ChunkCoord> coordOpt = ChunkHelper::chunkRequestQueue.wait_pop(ChunkHelper::workerRunning);
-//         ChunkCoord coord;
-//         if (!coordOpt.has_value()) continue;
-//
-//         coord = coordOpt.value();
-//         auto chunk = std::make_unique<Chunk>();
-//         chunk->chunkCoords = coord;
-//
-//         ChunkHelper::generateChunkTerrain(chunk);
-//         ChunkHelper::populateTrees(chunk);
-//
-//         chunk->dirty = true;
-//
-//         ChunkHelper::chunkBuildQueue.push(std::move(chunk));
-//
-//         {
-//             std::lock_guard<std::mutex> lock(ChunkHelper::chunkRequestSetMutex);
-//             ChunkHelper::chunkRequestSet.erase(coord);
-//         }
-//     }
-// }
-
-void Renderer::initChunkWorkers(int threadCount) {
-    ChunkHelper::workerRunning = true;
-    for (int i = 0; i < threadCount; i++) {
-        Renderer::workers.emplace_back([]() {
-            while (ChunkHelper::workerRunning) {
-                ChunkCoord coord;
-                try { coord = ChunkHelper::chunkRequestQueue.wait_pop(ChunkHelper::workerRunning); } catch (...) {
-                    continue;
-                }
-                if (!ChunkHelper::workerRunning) break;
-                auto chunk = ChunkHelper::generateChunkAsync({(float) coord.x, 0.0f, (float) coord.z});
-                ChunkHelper::chunkBuildQueue.push(std::move(chunk));
-            }
-        });
-    }
-}
-
-// void Renderer::shutdownChunkWorkers() {
-//     ChunkHelper::workerRunning = false;
-//
-//     ChunkHelper::chunkRequestQueue.notifyAll();
-//
-//     for (auto &t: workers)
-//         if (t.joinable()) t.join();
-//
-//     workers.clear();
-//
-//     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
-//     for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
-//         if (chunk && IsModelValid(chunk->model)) {
-//             UnloadModel(chunk->model);
-//         }
-//     }
-//
-//     ChunkHelper::activeChunks.clear();
-//
-//     if (IsTextureValid(textureAtlas)) {
-//         UnloadTexture(textureAtlas);
-//     }
-// }
-
-void Renderer::processChunkBuildQueue(const Camera3D &camera) {
-    constexpr int MAX_CHUNKS_PER_FRAME = 2;
-    int processed = 0;
-
-    while (processed < MAX_CHUNKS_PER_FRAME) {
-        std::unique_ptr<Chunk> chunk;
-        if (!ChunkHelper::chunkBuildQueue.try_pop(chunk)) break;
-        if (!chunk) continue;
-
-        ChunkCoord playerChunk = getPlayerChunkCoord(camera);
-        int dx = abs(chunk->chunkCoords.x - playerChunk.x);
-        int dz = abs(chunk->chunkCoords.z - playerChunk.z);
-        if (dx > Settings::preLoadDistance || dz > Settings::preLoadDistance) {
-            ChunkHelper::chunkBuildQueue.push(std::move(chunk));
-            break;
-        }
-
-        // Build all three models
-        buildChunkModel(*chunk);
-
-        chunk->loaded = true;
-        chunk->dirty = false;
-        chunk->alpha = 0.0f;
-
-        replaceChunk(chunk->chunkCoords, std::move(chunk));
-        processed++;
-    }
-}
 ChunkCoord Renderer::getPlayerChunkCoord(const Camera3D &camera) {
     auto worldToChunk = [](float v, int chunkSize) {
         int i = (int) floor(v);
@@ -961,6 +1100,7 @@ void Renderer::replaceChunk(const ChunkCoord &coord, std::unique_ptr<Chunk> newC
 
     ChunkHelper::activeChunks[coord] = std::move(newChunk);
 }
+
 void Renderer::drawCrosshair() {
     float screenMiddleY = (float) GetScreenHeight() / 2.0f;
     float screenMiddleX = (float) GetScreenWidth() / 2.0f;
@@ -972,36 +1112,64 @@ void Renderer::drawCrosshair() {
 
     DrawRectangleV({chVertDraw, chHorzDraw}, {crosshairWidth, crosshairWidth}, WHITE);
 }
+
 // In Chunk.cpp
-void Renderer::rebuildDirtyChunks() {
-    std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+// void Renderer::rebuildDirtyChunks() {
+//     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+//     int rebuiltThisFrame = 0;
+//     constexpr int MAX_REBUILDS_PER_FRAME = 2;  // Limit rebuilds
+//
+//     for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
+//         if (!chunk || !chunk->dirty) continue;
+//
+//         // Recalculate this chunk's lighting
+//         LightingSystem::calculateSkyLight(*chunk);
+//         LightingSystem::calculateBlockLight(*chunk);
+//
+//         // Spread light FROM all existing neighbors INTO this chunk
+//         if (ChunkHelper::activeChunks.count({coord.x - 1, coord.z})) {
+//             auto &neighbor = ChunkHelper::activeChunks.at({coord.x - 1, coord.z});
+//             LightingSystem::spreadLightFromNeighbor(*chunk, *neighbor, 0);
+//         }
+//         if (ChunkHelper::activeChunks.count({coord.x + 1, coord.z})) {
+//             auto &neighbor = ChunkHelper::activeChunks.at({coord.x + 1, coord.z});
+//             LightingSystem::spreadLightFromNeighbor(*chunk, *neighbor, 1);
+//         }
+//         if (ChunkHelper::activeChunks.count({coord.x, coord.z - 1})) {
+//             auto &neighbor = ChunkHelper::activeChunks.at({coord.x, coord.z - 1});
+//             LightingSystem::spreadLightFromNeighbor(*chunk, *neighbor, 2);
+//         }
+//         if (ChunkHelper::activeChunks.count({coord.x, coord.z + 1})) {
+//             auto &neighbor = ChunkHelper::activeChunks.at({coord.x, coord.z + 1});
+//             LightingSystem::spreadLightFromNeighbor(*chunk, *neighbor, 3);
+//         }
+//
+//         // Unload old models
+//         if (chunk->opaqueModel.meshCount > 0 && IsModelValid(chunk->opaqueModel)) {
+//             UnloadModel(chunk->opaqueModel);
+//             chunk->opaqueModel = {0};
+//         }
+//         if (chunk->translucentModel.meshCount > 0 && IsModelValid(chunk->translucentModel)) {
+//             UnloadModel(chunk->translucentModel);
+//             chunk->translucentModel = {0};
+//         }
+//
+//         // Rebuild both models
+//         buildChunkModel(*chunk);
+//
+//         chunk->dirty = false;
+//         chunk->loaded = true;
+//
+//         rebuiltThisFrame++;
+//     }
+// }
 
-    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
-        if (!chunk || !chunk->dirty) continue;
-
-        // Unload old models
-        if (chunk->opaqueModel.meshCount > 0 && IsModelValid(chunk->opaqueModel)) {
-            UnloadModel(chunk->opaqueModel);
-            chunk->opaqueModel = {0};
-        }
-        if (chunk->translucentModel.meshCount > 0 && IsModelValid(chunk->translucentModel)) {
-            UnloadModel(chunk->translucentModel);
-            chunk->translucentModel = {0};
-        }
-
-        // Rebuild both models
-        buildChunkModel(*chunk);
-
-        chunk->dirty = false;
-        chunk->loaded = true;
-    }
-}
 
 Shader Renderer::waterShader = {0};
 int Renderer::waterTimeLoc = 0;
 
 void Renderer::initWaterShader() {
-    const char* vsCode = R"(
+    const char *vsCode = R"(
         #version 330
         in vec3 vertexPosition;
         in vec2 vertexTexCoord;
@@ -1016,7 +1184,7 @@ void Renderer::initWaterShader() {
         }
     )";
 
-    const char* fsCode = R"(
+    const char *fsCode = R"(
         #version 330
         in vec2 fragTexCoord;
         in vec4 fragColor;
@@ -1046,4 +1214,331 @@ void Renderer::initWaterShader() {
 
 void Renderer::updateWaterShader(float time) {
     SetShaderValue(waterShader, waterTimeLoc, &time, SHADER_UNIFORM_FLOAT);
+}
+
+// Calculate smooth lighting for a vertex
+float Renderer::getVertexLight(const Chunk& chunk, int bx, int by, int bz, int face,
+                                int vertex, const NeighborEdgeData& neighbors) {
+    static const int fdx[6] = { 0, 0, -1, 1, 0, 0 };
+    static const int fdy[6] = { 0, 0, 0, 0, 1, -1 };
+    static const int fdz[6] = { -1, 1, 0, 0, 0, 0 };
+
+    int lx = bx + fdx[face];
+    int ly = by + fdy[face];
+    int lz = bz + fdz[face];
+
+    if (ly < 0) return 0.15f;
+    if (ly >= CHUNK_SIZE_Y) return 1.0f;
+
+    int lightLevel;
+    bool usedNeighbor = false;
+
+    if (lx < 0) {
+        usedNeighbor = true;
+        lightLevel = neighbors.hasNegX ? neighbors.getLightNegX(ly, lz) : 15;
+    } else if (lx >= CHUNK_SIZE_X) {
+        usedNeighbor = true;
+        lightLevel = neighbors.hasPosX ? neighbors.getLightPosX(ly, lz) : 15;
+    } else if (lz < 0) {
+        usedNeighbor = true;
+        lightLevel = neighbors.hasNegZ ? neighbors.getLightNegZ(lx, ly) : 15;
+    } else if (lz >= CHUNK_SIZE_Z) {
+        usedNeighbor = true;
+        lightLevel = neighbors.hasPosZ ? neighbors.getLightPosZ(lx, ly) : 15;
+    } else {
+        lightLevel = chunk.getLightLevel(lx, ly, lz);
+    }
+
+    // DEBUG: Log edge cases
+    static int debugCount = 0;
+    if (usedNeighbor && debugCount++ < 50) {
+        printf("DEBUG getVertexLight: block(%d,%d,%d) face=%d sample(%d,%d,%d) light=%d hasNeighbor=%s\n",
+               bx, by, bz, face, lx, ly, lz, lightLevel,
+               (lx < 0 ? (neighbors.hasNegX ? "YES" : "NO") :
+                lx >= CHUNK_SIZE_X ? (neighbors.hasPosX ? "YES" : "NO") :
+                lz < 0 ? (neighbors.hasNegZ ? "YES" : "NO") :
+                (neighbors.hasPosZ ? "YES" : "NO")));
+    }
+
+    float minLight = 0.15f;
+    return minLight + 0.85f * (lightLevel / 15.0f);
+}
+
+// Initialize mesh thread pool (call in Engine constructor after initChunkWorkers)
+void Renderer::initMeshThreadPool(int threads) {
+    g_meshThreadPool = std::make_unique<MeshThreadPool>(threads);
+}
+
+void Renderer::shutdownMeshThreadPool() {
+    if (g_meshThreadPool) {
+        g_meshThreadPool->shutdown();
+        g_meshThreadPool.reset();
+    }
+}
+
+// Build mesh data on worker thread (no OpenGL calls)
+void Renderer::buildChunkMeshAsync(Chunk& chunk) {
+    if (chunk.meshBuilding.exchange(true)) return;
+
+    // Get neighbor data while holding the lock
+    NeighborEdgeData neighbors = cacheNeighborEdges(chunk.chunkCoords);
+
+    // Check if we have all neighbors - if not, faces at edges might be wrong
+    printf("DEBUG: Building mesh for (%d,%d) - neighbors: -X=%d +X=%d -Z=%d +Z=%d\n",
+           chunk.chunkCoords.x, chunk.chunkCoords.z,
+           neighbors.hasNegX, neighbors.hasPosX, neighbors.hasNegZ, neighbors.hasPosZ);
+
+    auto meshData = std::make_unique<ChunkMeshTriple>();
+    *meshData = buildChunkMeshesInternal(chunk, neighbors);
+
+    chunk.pendingMeshData = std::move(meshData);
+    chunk.meshBuilding = false;
+    chunk.meshReady = true;
+}
+// Upload mesh to GPU (main thread only)
+ void Renderer::uploadMeshToGPU(Chunk& chunk) {
+    if (!chunk.pendingMeshData) return;
+
+    // Unload old models
+    if (chunk.opaqueModel.meshCount > 0 && IsModelValid(chunk.opaqueModel)) {
+        UnloadModel(chunk.opaqueModel);
+        chunk.opaqueModel = {0};
+    }
+    if (chunk.translucentModel.meshCount > 0 && IsModelValid(chunk.translucentModel)) {
+        UnloadModel(chunk.translucentModel);
+        chunk.translucentModel = {0};
+    }
+    if (chunk.waterModel.meshCount > 0 && IsModelValid(chunk.waterModel)) {
+        UnloadModel(chunk.waterModel);
+        chunk.waterModel = {0};
+    }
+
+    const ChunkMeshTriple& meshData = *chunk.pendingMeshData;
+
+    // Upload opaque mesh
+    if (!meshData.opaque.vertices.empty()) {
+        chunk.opaqueModel = createModelFromBuffers(meshData.opaque, chunk.chunkCoords);
+    }
+
+    // Upload translucent mesh
+    if (!meshData.translucent.vertices.empty()) {
+        chunk.translucentModel = createModelFromBuffers(meshData.translucent, chunk.chunkCoords);
+    }
+
+    // Upload water mesh
+    if (!meshData.water.vertices.empty()) {
+        chunk.waterModel = createModelFromBuffers(meshData.water, chunk.chunkCoords);
+    }
+
+    chunk.pendingMeshData.reset();
+    chunk.meshReady = false;
+    chunk.loaded = true;
+}
+
+Model Renderer::createModelFromBuffers(const ChunkMeshBuffers& buf, const ChunkCoord& coord) {
+    Mesh mesh = {0};
+
+    mesh.vertexCount = buf.vertices.size() / 3;
+    mesh.triangleCount = buf.indices.size() / 3;
+
+    mesh.vertices = (float*)MemAlloc(buf.vertices.size() * sizeof(float));
+    memcpy(mesh.vertices, buf.vertices.data(), buf.vertices.size() * sizeof(float));
+
+    mesh.normals = (float*)MemAlloc(buf.normals.size() * sizeof(float));
+    memcpy(mesh.normals, buf.normals.data(), buf.normals.size() * sizeof(float));
+
+    mesh.texcoords = (float*)MemAlloc(buf.texcoords.size() * sizeof(float));
+    memcpy(mesh.texcoords, buf.texcoords.data(), buf.texcoords.size() * sizeof(float));
+
+    mesh.colors = (unsigned char*)MemAlloc(buf.colors.size() * sizeof(unsigned char));
+    memcpy(mesh.colors, buf.colors.data(), buf.colors.size() * sizeof(unsigned char));
+
+    mesh.indices = (unsigned short*)MemAlloc(buf.indices.size() * sizeof(unsigned short));
+    memcpy(mesh.indices, buf.indices.data(), buf.indices.size() * sizeof(unsigned short));
+
+    UploadMesh(&mesh, false);
+
+    Model model = LoadModelFromMesh(mesh);
+    model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = textureAtlas;
+
+    return model;
+}
+
+// Process chunks from generation queue
+void Renderer::initChunkWorkers(int threadCount) {
+    ChunkHelper::workerRunning = true;
+    for (int i = 0; i < threadCount; i++) {
+        Renderer::workers.emplace_back([]() {
+            while (ChunkHelper::workerRunning) {
+                ChunkCoord coord;
+                try {
+                    coord = ChunkHelper::chunkRequestQueue.wait_pop(ChunkHelper::workerRunning);
+                } catch (...) {
+                    continue;
+                }
+                if (!ChunkHelper::workerRunning) break;
+
+                auto chunk = ChunkHelper::generateChunkAsync({(float)coord.x, 0.0f, (float)coord.z});
+
+                // Calculate lighting on worker thread (not main thread!)
+                LightingSystem::calculateSkyLight(*chunk);
+                LightingSystem::calculateBlockLight(*chunk);
+
+                ChunkHelper::chunkBuildQueue.push(std::move(chunk));
+            }
+        });
+    }
+}
+
+void Renderer::processChunkBuildQueue(const Camera3D &camera) {
+    constexpr int MAX_CHUNKS_PER_FRAME = 2;
+    int processed = 0;
+
+    ChunkCoord playerChunk = getPlayerChunkCoord(camera);
+
+    // Collect chunks from queue
+    std::vector<std::unique_ptr<Chunk>> pendingChunks;
+    {
+        std::unique_ptr<Chunk> chunk;
+        while (ChunkHelper::chunkBuildQueue.try_pop(chunk)) {
+            if (chunk) {
+                int dx = abs(chunk->chunkCoords.x - playerChunk.x);
+                int dz = abs(chunk->chunkCoords.z - playerChunk.z);
+
+                // Only keep chunks within range
+                if (dx <= Settings::preLoadDistance && dz <= Settings::preLoadDistance) {
+                    pendingChunks.push_back(std::move(chunk));
+                }
+            }
+        }
+    }
+
+    // Sort by distance (closest first)
+    std::sort(pendingChunks.begin(), pendingChunks.end(),
+        [&playerChunk](const std::unique_ptr<Chunk>& a, const std::unique_ptr<Chunk>& b) {
+            int distA = abs(a->chunkCoords.x - playerChunk.x) + abs(a->chunkCoords.z - playerChunk.z);
+            int distB = abs(b->chunkCoords.x - playerChunk.x) + abs(b->chunkCoords.z - playerChunk.z);
+            return distA < distB;
+        });
+
+    // Process closest chunks first
+    for (auto& chunk : pendingChunks) {
+        if (processed >= MAX_CHUNKS_PER_FRAME) {
+            // Put remaining chunks back in queue
+            ChunkHelper::chunkBuildQueue.push(std::move(chunk));
+            continue;
+        }
+
+        ChunkCoord coord = chunk->chunkCoords;
+
+        // Spread light from neighbors
+        {
+            std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+            auto& activeChunks = ChunkHelper::activeChunks;
+            if (activeChunks.count({coord.x - 1, coord.z})) {
+                LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x - 1, coord.z}], 0);
+            }
+            if (activeChunks.count({coord.x + 1, coord.z})) {
+                LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x + 1, coord.z}], 1);
+            }
+            if (activeChunks.count({coord.x, coord.z - 1})) {
+                LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x, coord.z - 1}], 2);
+            }
+            if (activeChunks.count({coord.x, coord.z + 1})) {
+                LightingSystem::spreadLightFromNeighbor(*chunk, *activeChunks[{coord.x, coord.z + 1}], 3);
+            }
+        }
+
+        chunk->loaded = false;
+        chunk->dirty = false;
+        chunk->meshReady = false;
+        chunk->meshBuilding = false;
+
+        replaceChunk(coord, std::move(chunk));
+
+        // Submit mesh building to thread pool
+        g_meshThreadPool->submit([coord]() {
+            std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+            auto it = ChunkHelper::activeChunks.find(coord);
+            if (it != ChunkHelper::activeChunks.end() && it->second) {
+                Renderer::buildChunkMeshAsync(*it->second);
+            }
+        });
+
+        // Mark neighbors dirty
+        ChunkHelper::markChunkDirty(coord);
+        ChunkHelper::markChunkDirty({coord.x - 1, coord.z});
+        ChunkHelper::markChunkDirty({coord.x + 1, coord.z});
+        ChunkHelper::markChunkDirty({coord.x, coord.z - 1});
+        ChunkHelper::markChunkDirty({coord.x, coord.z + 1});
+
+        processed++;
+    }
+}
+
+// Upload ready meshes to GPU (call every frame on main thread)
+void Renderer::uploadPendingMeshes() {
+    std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+
+    int uploaded = 0;
+    constexpr int MAX_UPLOADS_PER_FRAME = 4;
+
+    for (auto& [coord, chunk] : ChunkHelper::activeChunks) {
+        if (!chunk) continue;
+        if (!chunk->meshReady.load()) continue;
+        if (uploaded >= MAX_UPLOADS_PER_FRAME) break;
+
+        uploadMeshToGPU(*chunk);
+        uploaded++;
+    }
+}
+
+// Rebuild dirty chunks (also threaded)
+void Renderer::rebuildDirtyChunks() {
+    std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+
+    int submitted = 0;
+    constexpr int MAX_SUBMITS_PER_FRAME = 1;  // Only 1!
+
+    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
+        if (!chunk || !chunk->dirty) continue;
+        if (chunk->meshBuilding.load()) continue;
+        if (submitted >= MAX_SUBMITS_PER_FRAME) break;
+
+        chunk->dirty = false;
+
+        // Submit to thread pool - do lighting AND mesh building on worker
+        ChunkCoord c = coord;
+        g_meshThreadPool->submit([c]() {
+            std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+            auto it = ChunkHelper::activeChunks.find(c);
+            if (it == ChunkHelper::activeChunks.end() || !it->second) return;
+
+            Chunk& chunk = *it->second;
+
+            // Recalculate lighting on worker thread
+            LightingSystem::calculateSkyLight(chunk);
+            LightingSystem::calculateBlockLight(chunk);
+
+            // Spread from neighbors
+            auto& activeChunks = ChunkHelper::activeChunks;
+            if (activeChunks.count({c.x - 1, c.z})) {
+                LightingSystem::spreadLightFromNeighbor(chunk, *activeChunks[{c.x - 1, c.z}], 0);
+            }
+            if (activeChunks.count({c.x + 1, c.z})) {
+                LightingSystem::spreadLightFromNeighbor(chunk, *activeChunks[{c.x + 1, c.z}], 1);
+            }
+            if (activeChunks.count({c.x, c.z - 1})) {
+                LightingSystem::spreadLightFromNeighbor(chunk, *activeChunks[{c.x, c.z - 1}], 2);
+            }
+            if (activeChunks.count({c.x, c.z + 1})) {
+                LightingSystem::spreadLightFromNeighbor(chunk, *activeChunks[{c.x, c.z + 1}], 3);
+            }
+
+            // Build mesh
+            Renderer::buildChunkMeshAsync(chunk);
+        });
+
+        submitted++;
+    }
 }

@@ -44,7 +44,6 @@ struct ChunkCoordHash {
 };
 
 
-
 constexpr int CHUNK_SIZE_X = 16;
 constexpr int CHUNK_SIZE_Y = 256;
 constexpr int CHUNK_SIZE_Z = 16;
@@ -103,18 +102,51 @@ struct Biome {
     float hillAmplitude;
     int surfaceBlock;
     int subsurfaceBlock;
-    float treeChance;      // 0 = no trees, higher = more trees
+    float treeChance; // 0 = no trees, higher = more trees
     bool hasRivers;
 };
 
 inline std::unordered_map<BiomeType, Biome> biomes = {
-    { BIOME_OCEAN,     { BIOME_OCEAN,     35.0f,  8.0f,  0.01f,  3.0f,  ID_SAND,   ID_SAND,   0.0f,    false } },
-    { BIOME_BEACH,     { BIOME_BEACH,     50.0f,  3.0f,  0.02f,  2.0f,  ID_SAND,   ID_SAND,   0.0f,    false } },
-    { BIOME_DESERT,    { BIOME_DESERT,    62.0f,  10.0f, 0.015f, 8.0f,  ID_SAND,   ID_SAND,   0.0f,    false } },
-    { BIOME_PLAINS,    { BIOME_PLAINS,    64.0f,  6.0f,  0.02f,  4.0f,  ID_GRASS,  ID_DIRT,   0.003f,  true  } },
-    { BIOME_FOREST,    { BIOME_FOREST,    66.0f,  10.0f, 0.025f, 6.0f,  ID_GRASS,  ID_DIRT,   0.04f,   true  } },
-    { BIOME_HILLS,     { BIOME_HILLS,     72.0f,  25.0f, 0.03f,  15.0f, ID_GRASS,  ID_DIRT,   0.01f,   true  } },
-    { BIOME_MOUNTAINS, { BIOME_MOUNTAINS, 85.0f,  55.0f, 0.04f,  30.0f, ID_STONE,  ID_STONE,  0.005f,  false } },
+    {BIOME_OCEAN, {BIOME_OCEAN, 35.0f, 8.0f, 0.01f, 3.0f, ID_SAND, ID_SAND, 0.0f, false}},
+    {BIOME_BEACH, {BIOME_BEACH, 50.0f, 3.0f, 0.02f, 2.0f, ID_SAND, ID_SAND, 0.0f, false}},
+    {BIOME_DESERT, {BIOME_DESERT, 62.0f, 10.0f, 0.015f, 8.0f, ID_SAND, ID_SAND, 0.0f, false}},
+    {BIOME_PLAINS, {BIOME_PLAINS, 64.0f, 6.0f, 0.02f, 4.0f, ID_GRASS, ID_DIRT, 0.003f, true}},
+    {BIOME_FOREST, {BIOME_FOREST, 66.0f, 10.0f, 0.025f, 6.0f, ID_GRASS, ID_DIRT, 0.04f, true}},
+    {BIOME_HILLS, {BIOME_HILLS, 72.0f, 25.0f, 0.03f, 15.0f, ID_GRASS, ID_DIRT, 0.01f, true}},
+    {BIOME_MOUNTAINS, {BIOME_MOUNTAINS, 85.0f, 55.0f, 0.04f, 30.0f, ID_STONE, ID_STONE, 0.005f, false}},
+};
+
+// In ChunkMeshBuffers, add reserve:
+struct ChunkMeshBuffers {
+    std::vector<float> vertices;
+    std::vector<float> normals;
+    std::vector<float> texcoords;
+    std::vector<unsigned char> colors;
+    std::vector<unsigned short> indices;
+
+    void reserve(size_t expectedFaces) {
+        size_t verts = expectedFaces * 4;
+        vertices.reserve(verts * 3);
+        normals.reserve(verts * 3);
+        texcoords.reserve(verts * 2);
+        colors.reserve(verts * 4);
+        indices.reserve(expectedFaces * 6);
+    }
+
+    void clear() {
+        vertices.clear();
+        normals.clear();
+        texcoords.clear();
+        colors.clear();
+        indices.clear();
+    }
+};
+
+// In buildChunkMeshes:
+struct ChunkMeshTriple {
+    ChunkMeshBuffers opaque;
+    ChunkMeshBuffers translucent;
+    ChunkMeshBuffers water;
 };
 
 struct Chunk {
@@ -126,8 +158,8 @@ struct Chunk {
 
     // Three separate models
     mutable Model opaqueModel = {0};
-    mutable Model translucentModel = {0};  // Leaves, glass, etc.
-    mutable Model waterModel = {0};         // Water only
+    mutable Model translucentModel = {0}; // Leaves, glass, etc.
+    mutable Model waterModel = {0}; // Water only
 
     mutable bool meshBuilt = false;
     mutable Material material = {0};
@@ -137,22 +169,34 @@ struct Chunk {
     std::atomic<bool> loaded = false;
     float alpha = 0.0f;
     bool dirty = true;
+
+    uint8_t skyLight[CHUNK_SIZE_X][CHUNK_SIZE_Y][CHUNK_SIZE_Z];
+    uint8_t blockLight[CHUNK_SIZE_X][CHUNK_SIZE_Y][CHUNK_SIZE_Z];
+
+    // Helper to get combined light level (0-15)
+    int getLightLevel(int x, int y, int z) const {
+        if (x < 0 || x >= CHUNK_SIZE_X ||
+            y < 0 || y >= CHUNK_SIZE_Y ||
+            z < 0 || z >= CHUNK_SIZE_Z)
+            return 15;
+
+        int sky = skyLight[x][y][z];
+        int block = blockLight[x][y][z];
+
+        // DEBUG
+        static int debugCount = 0;
+        if (debugCount++ < 20 && (sky > 0 || block > 0)) {
+            printf("getLightLevel(%d,%d,%d): sky=%d, block=%d\n", x, y, z, sky, block);
+        }
+
+        return std::max(sky, block);
+    }
+
+    std::unique_ptr<ChunkMeshTriple> pendingMeshData;
+    std::atomic<bool> meshReady{false};
+    std::atomic<bool> meshBuilding{false};
 };
 
-
-struct ChunkMeshBuffers {
-    std::vector<float> vertices;
-    std::vector<float> normals;
-    std::vector<float> texcoords;
-    std::vector<unsigned char> colors;
-    std::vector<unsigned short> indices;
-};
-
-struct ChunkMeshTriple {
-    ChunkMeshBuffers opaque;
-    ChunkMeshBuffers translucent;
-    ChunkMeshBuffers water;
-};
 
 template<typename T>
 struct ThreadSafeQueue {
@@ -210,6 +254,8 @@ namespace ChunkHelper {
     inline FastNoiseLite caveNoise;
     inline FastNoiseLite humidityNoise;
     inline FastNoiseLite continentalnessNoise;
+
+    static BlockIds getWorldBlock(int worldX, int worldY, int worldZ);
 
     inline ThreadSafeQueue<std::unique_ptr<Chunk> > chunkBuildQueue;
 
@@ -270,9 +316,9 @@ namespace ChunkHelper {
 
     ChunkCoord worldToChunkCoord(int wx, int wz);
 
-    void markChunkDirty(const ChunkCoord& coord);
+    void markChunkDirty(const ChunkCoord &coord);
 
-    void setBiomeFloor(const std::unique_ptr<Chunk>& chunk);
+    void setBiomeFloor(const std::unique_ptr<Chunk> &chunk);
 
     int WorldToChunk(int w);
 
@@ -286,28 +332,32 @@ namespace ChunkHelper {
 
 
     BiomeType getBiomeAt(int wx, int wz);
+
     float getTemperature(int wx, int wz);
+
     float getHumidity(int wx, int wz);
+
     float getContinentalness(int wx, int wz);
 
     // In Blocks.hpp or a new Biomes.hpp
 
 
     static ChunkMeshTriple buildChunkMeshes(const Chunk &chunk);
+
     static void drawChunkWater(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera);
 
     inline Color getBiomeGrassTint(BiomeType biome) {
         switch (biome) {
             case BIOME_DESERT:
-                return {190, 180, 110, 255};  // Yellowish dry grass
+                return {190, 180, 110, 255}; // Yellowish dry grass
             case BIOME_FOREST:
-                return {80, 140, 50, 255};    // Dark green
+                return {80, 140, 50, 255}; // Dark green
             case BIOME_PLAINS:
-                return {105, 175, 59, 255};   // Normal green
+                return {105, 175, 59, 255}; // Normal green
             case BIOME_HILLS:
-                return {90, 160, 60, 255};    // Slightly darker
+                return {90, 160, 60, 255}; // Slightly darker
             case BIOME_MOUNTAINS:
-                return {120, 150, 80, 255};   // Grayish green
+                return {120, 150, 80, 255}; // Grayish green
             case BIOME_OCEAN:
             case BIOME_BEACH:
             default:
@@ -318,11 +368,11 @@ namespace ChunkHelper {
     inline Color getBiomeWaterTint(BiomeType biome) {
         switch (biome) {
             case BIOME_DESERT:
-                return {80, 150, 200, 180};   // Lighter blue
+                return {80, 150, 200, 180}; // Lighter blue
             case BIOME_FOREST:
-                return {50, 90, 180, 180};    // Darker blue
+                return {50, 90, 180, 180}; // Darker blue
             case BIOME_OCEAN:
-                return {40, 80, 200, 180};    // Deep blue
+                return {40, 80, 200, 180}; // Deep blue
             default:
                 return {60, 100, 255, 180};
         }
@@ -331,11 +381,11 @@ namespace ChunkHelper {
     inline Color getBiomeLeafTint(BiomeType biome) {
         switch (biome) {
             case BIOME_DESERT:
-                return {140, 160, 80, 255};   // Olive/dry
+                return {140, 160, 80, 255}; // Olive/dry
             case BIOME_FOREST:
-                return {60, 120, 40, 255};    // Deep green
+                return {60, 120, 40, 255}; // Deep green
             case BIOME_PLAINS:
-                return {80, 140, 50, 255};    // Normal
+                return {80, 140, 50, 255}; // Normal
             default:
                 return {80, 140, 50, 255};
         }

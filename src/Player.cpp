@@ -11,19 +11,16 @@
 #include "Chunk.hpp"
 #include <cfloat>
 
+#include "Collision.hpp"
+#include "LightingSystem.hpp"
+
 Player::Player() {
     this->camera = {0};
-    this->camera.position = (Vector3){0.0f, 65.0f, 10.0f}; // Camera position
+    this->camera.position = (Vector3){0.0f, 120.0f, 10.0f}; // Camera position
     this->camera.target = (Vector3){0.0f, 0.0f, 0.0f}; // Camera looking at point
     this->camera.up = (Vector3){0.0f, 1.0f, 0.0f}; // Camera up vector (rotation towards target)
     this->camera.fovy = Settings::fov; // Camera field-of-view Y
     this->camera.projection = CAMERA_PERSPECTIVE; // Camera mode type
-}
-
-void Player::update() {
-    this->move();
-    this->breakBlock();
-    this->placeBlock();
 }
 
 Camera3D &Player::getCamera() {
@@ -33,10 +30,10 @@ Camera3D &Player::getCamera() {
 void Player::move() {
     UpdateCameraPro(&camera,
                     (Vector3){
-                        (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP)) * 0.5f - // Move forward-backward
-                        (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN)) * 0.5f,
-                        (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) * 0.5f - // Move right-left
-                        (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) * 0.5f,
+                        (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP)) * 0.25f - // Move forward-backward
+                        (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN)) * 0.25f,
+                        (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) * 0.25f - // Move right-left
+                        (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) * 0.25f,
                         (IsKeyDown(KEY_SPACE) * 0.1f - IsKeyDown(KEY_LEFT_SHIFT) * 0.2f) // Move up-down
                     },
                     (Vector3){
@@ -57,9 +54,9 @@ void Player::breakBlock() {
         Vector3Subtract(camera.target, camera.position)
     );
 
-    int x = (int)floor(rayPos.x);
-    int y = (int)floor(rayPos.y);
-    int z = (int)floor(rayPos.z);
+    int x = (int) floor(rayPos.x);
+    int y = (int) floor(rayPos.y);
+    int z = (int) floor(rayPos.z);
 
     int stepX = (rayDir.x > 0) ? 1 : -1;
     int stepY = (rayDir.y > 0) ? 1 : -1;
@@ -95,6 +92,11 @@ void Player::breakBlock() {
             // Mark this chunk dirty
             ChunkCoord coord = ChunkHelper::worldToChunkCoord(x, z);
             ChunkHelper::markChunkDirty(coord);
+
+            auto &chunk = ChunkHelper::activeChunks.at(coord);
+            LightingSystem::calculateChunkLighting(*chunk);
+            LightingSystem::debugChunkLight(*chunk);
+
 
             // Check neighboring chunks if block is on edge
             int localX = ChunkHelper::WorldToLocal(x);
@@ -150,11 +152,11 @@ void Player::placeBlock() {
         Vector3Subtract(camera.target, camera.position)
     );
 
-    int x = (int)floor(rayPos.x);
-    int y = (int)floor(rayPos.y);
-    int z = (int)floor(rayPos.z);
+    int x = (int) floor(rayPos.x);
+    int y = (int) floor(rayPos.y);
+    int z = (int) floor(rayPos.z);
 
-    int prevX = x, prevY = y, prevZ = z;  // Track previous position
+    int prevX = x, prevY = y, prevZ = z; // Track previous position
 
     int stepX = (rayDir.x > 0) ? 1 : -1;
     int stepY = (rayDir.y > 0) ? 1 : -1;
@@ -186,7 +188,7 @@ void Player::placeBlock() {
         if (block != ID_AIR && block != ID_WATER) {
             // Place block at previous (empty) position
             if (prevY >= 0 && prevY < CHUNK_SIZE_Y) {
-                ChunkHelper::setBlock(prevX, prevY, prevZ, ID_STONE);  // Or selected block
+                ChunkHelper::setBlock(prevX, prevY, prevZ, ID_STONE); // Or selected block
 
                 ChunkCoord coord = ChunkHelper::worldToChunkCoord(prevX, prevZ);
                 ChunkHelper::markChunkDirty(coord);
@@ -245,4 +247,337 @@ std::unique_ptr<Chunk> *Player::getCurrentPlayerChunk() {
         return &it->second; // return pointer to unique_ptr
     }
     return nullptr;
+}
+
+// In Player.cpp
+
+void Player::update() {
+    if (!spawned) {
+        trySpawn();
+        return;
+    }
+    float deltaTime = GetFrameTime();
+
+    // Mouse look
+    Vector2 mouseDelta = GetMouseDelta();
+    float sensitivity = 0.002f;
+
+    // Update camera angles
+    static float yaw = 0.0f;
+    static float pitch = 0.0f;
+
+    yaw -= mouseDelta.x * sensitivity;
+    pitch -= mouseDelta.y * sensitivity;
+
+    // Clamp pitch
+    if (pitch > 1.5f) pitch = 1.5f;
+    if (pitch < -1.5f) pitch = -1.5f;
+
+    // Calculate look direction
+    Vector3 forward = {
+        cosf(pitch) * sinf(yaw),
+        sinf(pitch),
+        cosf(pitch) * cosf(yaw)
+    };
+
+    // Apply gravity
+    applyGravity(deltaTime);
+
+    // Handle movement input
+    handleMovement(deltaTime);
+
+    // Update camera position (at eye level)
+    camera.position = {
+        position.x,
+        position.y + EYE_HEIGHT,
+        position.z
+    };
+
+    // Update camera target
+    camera.target = Vector3Add(camera.position, forward);
+    this->breakBlock();
+    this->placeBlock();
+}
+
+void Player::applyGravity(float deltaTime) {
+    if (!onGround) {
+        velocity.y += GRAVITY * deltaTime;
+
+        if (velocity.y < -50.0f) velocity.y = -50.0f;
+    }
+
+    // Apply vertical movement
+    Vector3 newPosition = position;
+    newPosition.y += velocity.y * deltaTime;
+
+    // Check collision with small offset to avoid floating point issues
+    AABB playerBox = Collision::getPlayerAABB(newPosition);
+
+    // Shrink box slightly for ground check
+    playerBox.min.x += 0.01f;
+    playerBox.min.z += 0.01f;
+    playerBox.max.x -= 0.01f;
+    playerBox.max.z -= 0.01f;
+
+    if (Collision::checkCollision(playerBox)) {
+        if (velocity.y < 0) {
+            // Falling - land on ground
+            onGround = true;
+            velocity.y = 0;
+
+            // Snap to top of block
+            newPosition.y = floor(newPosition.y) + 0.001f;
+
+            // Adjust up until not colliding
+            for (int i = 0; i < 10; i++) {
+                playerBox = Collision::getPlayerAABB(newPosition);
+                playerBox.min.x += 0.01f;
+                playerBox.min.z += 0.01f;
+                playerBox.max.x -= 0.01f;
+                playerBox.max.z -= 0.01f;
+
+                if (!Collision::checkCollision(playerBox)) break;
+                newPosition.y += 0.1f;
+            }
+        } else {
+            // Hit ceiling
+            velocity.y = 0;
+            newPosition = position;
+        }
+    } else {
+        // Check if we're still on ground (small ray cast down)
+        Vector3 groundCheck = newPosition;
+        groundCheck.y -= 0.05f;
+
+        AABB groundBox = Collision::getPlayerAABB(groundCheck);
+        groundBox.min.x += 0.01f;
+        groundBox.min.z += 0.01f;
+        groundBox.max.x -= 0.01f;
+        groundBox.max.z -= 0.01f;
+
+        onGround = Collision::checkCollision(groundBox);
+    }
+
+    position = newPosition;
+}
+
+// Vector3 Player::moveWithCollision(Vector3 from, Vector3 to) {
+//     Vector3 result = to;
+//
+//     // Use slightly smaller box for movement to avoid getting stuck
+//     auto getShrunkAABB = [](const Vector3& pos) {
+//         AABB box = Collision::getPlayerAABB(pos);
+//         box.min.x += 0.02f;
+//         box.min.z += 0.02f;
+//         box.min.y += 0.01f;  // Small ground offset
+//         box.max.x -= 0.02f;
+//         box.max.z -= 0.02f;
+//         return box;
+//     };
+//
+//     // Try full movement first
+//     AABB box = getShrunkAABB(result);
+//     if (!Collision::checkCollision(box)) {
+//         return result;
+//     }
+//
+//     // Try X movement only
+//     result = {to.x, from.y, from.z};
+//     box = getShrunkAABB(result);
+//     if (Collision::checkCollision(box)) {
+//         result.x = from.x;
+//     }
+//
+//     // Try Z movement only
+//     result.z = to.z;
+//     box = getShrunkAABB(result);
+//     if (Collision::checkCollision(box)) {
+//         result.z = from.z;
+//     }
+//
+//     return result;
+// }
+void Player::handleMovement(float deltaTime) {
+    // Get movement input
+    Vector3 moveDir = {0, 0, 0};
+
+    // Calculate forward/right vectors (ignore pitch for movement)
+    float yaw = atan2f(camera.target.x - camera.position.x,
+                       camera.target.z - camera.position.z);
+
+    Vector3 forward = {sinf(yaw), 0, cosf(yaw)};
+    Vector3 right = {cosf(yaw), 0, -sinf(yaw)};
+
+    if (IsKeyDown(KEY_W)) {
+        moveDir.x += forward.x;
+        moveDir.z += forward.z;
+    }
+    if (IsKeyDown(KEY_S)) {
+        moveDir.x -= forward.x;
+        moveDir.z -= forward.z;
+    }
+    if (IsKeyDown(KEY_D)) {
+        moveDir.x -= right.x;
+        moveDir.z -= right.z;
+    }
+    if (IsKeyDown(KEY_A)) {
+        moveDir.x += right.x;
+        moveDir.z += right.z;
+    }
+
+    // Normalize movement direction
+    float length = sqrtf(moveDir.x * moveDir.x + moveDir.z * moveDir.z);
+    if (length > 0) {
+        moveDir.x /= length;
+        moveDir.z /= length;
+    }
+
+    // Apply speed
+    float speed = MOVE_SPEED;
+    if (IsKeyDown(KEY_LEFT_SHIFT)) {
+        speed *= SPRINT_MULTIPLIER;
+    }
+
+    moveDir.x *= speed * deltaTime;
+    moveDir.z *= speed * deltaTime;
+
+    // Jump
+    if (IsKeyPressed(KEY_SPACE) && onGround) {
+        velocity.y = JUMP_VELOCITY;
+        onGround = false;
+    }
+
+    // Apply horizontal movement with collision
+    if (length > 0) {
+        position = moveWithCollision(position, {
+                                         position.x + moveDir.x,
+                                         position.y,
+                                         position.z + moveDir.z
+                                     });
+    }
+}
+
+Vector3 Player::moveWithCollision(Vector3 from, Vector3 to) {
+    Vector3 result = to;
+
+    // Try full movement first
+    AABB box = Collision::getPlayerAABB(result);
+    if (!Collision::checkCollision(box)) {
+        return result;
+    }
+
+    // Try X movement only
+    result = {to.x, from.y, from.z};
+    box = Collision::getPlayerAABB(result);
+    if (Collision::checkCollision(box)) {
+        result.x = from.x; // Block X movement
+    }
+
+    // Try Z movement only
+    result.z = to.z;
+    box = Collision::getPlayerAABB(result);
+    if (Collision::checkCollision(box)) {
+        result.z = from.z; // Block Z movement
+    }
+
+    return result;
+}
+// In Player.cpp
+
+void Player::trySpawn() {
+    if (spawned) return;
+
+    ChunkCoord spawnChunk = ChunkHelper::worldToChunkCoord(0, 0);
+
+    // Wait for spawn chunk AND adjacent chunks
+    std::vector<ChunkCoord> requiredChunks = {
+        spawnChunk,
+        {spawnChunk.x - 1, spawnChunk.z},
+        {spawnChunk.x + 1, spawnChunk.z},
+        {spawnChunk.x, spawnChunk.z - 1},
+        {spawnChunk.x, spawnChunk.z + 1},
+    };
+
+    {
+        std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+
+        for (const auto& coord : requiredChunks) {
+            auto it = ChunkHelper::activeChunks.find(coord);
+            if (it == ChunkHelper::activeChunks.end() || !it->second || !it->second->loaded) {
+                // Not all chunks ready
+                return;
+            }
+        }
+    }
+
+    // Find a valid spawn position
+    int spawnX = 8;  // Center of chunk
+    int spawnZ = 8;
+    int spawnY = -1;
+
+    // Find the highest solid block
+    for (int y = CHUNK_SIZE_Y - 1; y >= 0; y--) {
+        int blockId = ChunkHelper::getBlock(spawnX, y, spawnZ);
+
+        if (blockId != ID_AIR && blockId != ID_WATER) {
+            spawnY = y + 1;  // Spawn on top of this block
+            break;
+        }
+    }
+
+    if (spawnY < 0) {
+        // No valid ground found, try again later
+        return;
+    }
+
+    // Check there's space for the player (2 blocks of air above)
+    int blockAbove1 = ChunkHelper::getBlock(spawnX, spawnY, spawnZ);
+    int blockAbove2 = ChunkHelper::getBlock(spawnX, spawnY + 1, spawnZ);
+
+    if (blockAbove1 != ID_AIR || blockAbove2 != ID_AIR) {
+        // Not enough space, find another spot
+        // Try nearby positions
+        for (int dx = -5; dx <= 5; dx++) {
+            for (int dz = -5; dz <= 5; dz++) {
+                int testX = spawnX + dx;
+                int testZ = spawnZ + dz;
+
+                // Find ground
+                for (int y = CHUNK_SIZE_Y - 1; y >= 0; y--) {
+                    int blockId = ChunkHelper::getBlock(testX, y, testZ);
+
+                    if (blockId != ID_AIR && blockId != ID_WATER) {
+                        int above1 = ChunkHelper::getBlock(testX, y + 1, testZ);
+                        int above2 = ChunkHelper::getBlock(testX, y + 2, testZ);
+
+                        if (above1 == ID_AIR && above2 == ID_AIR) {
+                            spawnX = testX;
+                            spawnZ = testZ;
+                            spawnY = y + 1;
+                            goto foundSpawn;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Still no valid spawn, wait for more chunks
+        return;
+    }
+
+foundSpawn:
+    // Set player position
+    position = {(float)spawnX + 0.5f, (float)spawnY, (float)spawnZ + 0.5f};
+    velocity = {0, 0, 0};
+    onGround = true;
+
+    // Update camera
+    camera.position = {position.x, position.y + EYE_HEIGHT, position.z};
+    camera.target = {position.x, position.y + EYE_HEIGHT, position.z + 1.0f};
+
+    spawned = true;
+    waitingForChunks = false;
+
+    printf("Player spawned at (%.1f, %.1f, %.1f)\n", position.x, position.y, position.z);
 }

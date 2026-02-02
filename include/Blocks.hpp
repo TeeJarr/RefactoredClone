@@ -21,6 +21,9 @@ enum BlockIds {
     ID_SAND,
     ID_GLASS,
     ID_SNOW,
+    ID_TORCH,
+    ID_LAVA,
+    ID_GLOWSTONE
 };
 
 enum TextureTiles {

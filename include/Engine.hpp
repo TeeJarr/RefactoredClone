@@ -20,7 +20,6 @@ private:
     void update();
 
     static void initWindowData();
-    static void initModels();
     static void loadBlockTextures();
 
 private:
