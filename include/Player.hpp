@@ -20,6 +20,9 @@ private:
     void move();
     void breakBlock();
 
+    void placeBlock();
+    int lastHitX, lastHitY, lastHitZ;  // Track the block before the one we hit
+
     std::unique_ptr<Chunk>* getCurrentPlayerChunk();
 
     Camera3D camera;

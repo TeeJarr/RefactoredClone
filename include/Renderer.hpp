@@ -40,7 +40,7 @@ static const int dx[6] = {  0,  0, -1,  1,  0,  0 };
 static const int dy[6] = {  0,  0,  0,  0,  1, -1 };
 static const int dz[6] = { -1,  1,  0,  0,  0,  0 };
 
-
+// In Renderer.hpp - add these declarations
 
 struct FaceTemplate {
     Vector3 verts[4];
@@ -82,24 +82,14 @@ public:
 
     static std::vector<std::thread> workers;
 
-
-    // Mesh createCubeMesh();
-    static void createCubeModel();
-    // UVRect getFaceUV(int id, int face);
     static UVRect GetAtlasUV(int tileIndex, int atlasWidth, int atlasHeight, int tileWidth, int tileHeight);
-
-     static void chunkWorkerFunc();
 
      static void initChunkWorkers(int threadCount);
 
      static void replaceChunk(const ChunkCoord &coord, std::unique_ptr<Chunk> newChunk);
 
-     static int GetGrassTileForFace(int face);
     static UVRect GetTileUV(int tileIndex, int atlasWidth, int atlasHeight, int tileSize);
 
-     static void createCubeModels();
-
-     // static Mesh createCubeMeshWithAtlas(int blockId);
     static bool isFaceExposed(const Chunk &chunk, int x, int y, int z, int face);
 
      static Plane normalizePlane(const Plane &plane);
@@ -114,7 +104,7 @@ public:
 
      static void AddFace(ChunkMeshBuffers &buf, const Vector3 &blockPos, int face, const BlockTextureDef &def, float lightLevel, bool tintTop);
 
-     static Model buildChunkModel(const Chunk &chunk);
+     static void buildChunkModel(const Chunk &chunk);
 
      static void checkActiveChunks(const Camera3D &camera);
 
@@ -126,7 +116,6 @@ public:
 
     static void renderAsyncChunks();
 
-     static void init();
 
      static void chunkWorkerThread();
 
@@ -150,7 +139,42 @@ public:
         {0, 1}  // bottom-left
     };
 
-};
+
+    // In Chunk.hpp
+    static void rebuildDirtyChunks();
+
+     static bool isFaceExposed(const Chunk &chunk, int x, int y, int z, int face, bool isTranslucent);
+
+    static ChunkMeshTriple buildChunkMeshes(const Chunk &chunk);
+
+     static void AddFaceWithAlpha(ChunkMeshBuffers &buf, const Vector3 &blockPos, int face, const BlockTextureDef &def,
+                                  float lightLevel, Color tint, unsigned char alpha);
+
+    static Model buildModelFromBuffers(ChunkMeshBuffers &buf);
+    static void drawChunkOpaque(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera);
+    static void drawChunkTranslucent(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera);
+
+     static void drawChunkWater(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera);
+
+     static void drawAllChunks(const Camera3D &camera);
+
+    // In Renderer.hpp
+    static float waterAnimTime;
+    static int waterAnimFrame;
+    static constexpr int WATER_FRAME_COUNT = 32;  // Number of water frames in atlas
+    static constexpr int WATER_FIRST_TILE = 8;    // First water tile index
+    static constexpr float WATER_FRAME_DURATION = 0.05f;  // Seconds per frame
+
+    // In Renderer.hpp
+    static Shader waterShader;
+    static int waterTimeLoc;
+
+    static void initWaterShader();
+    static void updateWaterShader(float time);};
+
+// In Renderer.hpp - add these declarations
+
+
 
 inline int numThreads = 4;
 

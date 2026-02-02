@@ -5,6 +5,11 @@
 #ifndef REFACTOREDCLONE_SETTINGS_HPP
 #define REFACTOREDCLONE_SETTINGS_HPP
 
+enum GameStates {
+    MENU,
+    IN_GAME
+};
+
 class Settings {
 public:
     static int screenWidth;
@@ -17,6 +22,11 @@ public:
     static int preLoadDistance;
 
     static int worldSeed;
+
+    static int gameStateFlag;
+
+    static float getSysTimeAsFloat();
 };
+
 
 #endif //REFACTOREDCLONE_SETTINGS_HPP

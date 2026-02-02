@@ -8,7 +8,7 @@
 #include <ranges>
 #include <raylib.h>
 #include <raymath.h>
-
+#include <algorithm>
 #include <rlgl.h>
 #include "Blocks.hpp"
 #include "Settings.hpp"
@@ -23,150 +23,8 @@ constexpr float ATLAS_HEIGHT = 64000.0f;
 Texture2D Renderer::textureAtlas = {};
 std::vector<std::thread> Renderer::workers;
 
-
-void Renderer::drawChunk(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera) {
-    if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
-    if (!chunk->loaded) return;
-
-
-    chunk->alpha += GetFrameTime() * 2.0f; // fade-in over ~0.5 seconds
-    if (chunk->alpha > 1.0f) chunk->alpha = 1.0f;
-
-    Vector3 worldPos = {
-        (float) (chunk->chunkCoords.x * CHUNK_SIZE_X),
-        0.0f,
-        (float) (chunk->chunkCoords.z * CHUNK_SIZE_Z)
-    };
-
-    Color tint = WHITE;
-    tint.a = (unsigned char) (chunk->alpha * 255);
-
-    // std::println("Drawing chunk: {}, {}", chunk->chunkCoords.x, chunk->chunkCoords.z);
-    DrawModel(chunk->model, worldPos, 1.0f, tint);
-}
-
-UVRect Renderer::GetTileUV(int tileIndex, int atlasWidth, int atlasHeight, int tileSize) {
-    float u0 = 0.0f;
-    float u1 = 1.0f; // full width
-    float v0 = (float) (tileIndex * tileSize) / (float) atlasHeight;
-    float v1 = (float) ((tileIndex + 1) * tileSize) / (float) atlasHeight;
-    return {u0, v0, u1, v1};
-}
-
-
-void Renderer::createCubeModels() {
-    for (auto &[id, model]: blockModels) {
-        UnloadModel(model);
-    }
-    blockModels.clear();
-
-    for (const auto &[id, def]: blockTextureDefs) {
-        Mesh mesh = {0};
-
-        float vertices[] = {
-            // Front
-            0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
-            // Back
-            1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1,
-            // Left
-            0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1,
-            // Right
-            1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-            // Top
-            0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1,
-            // Bottom
-            0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0
-        };
-
-        unsigned short indices[] = {
-            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
-            8, 10, 9, 8, 11, 10, 12, 13, 14, 12, 14, 15,
-            16, 18, 17, 16, 19, 18, 20, 22, 21, 20, 23, 22
-        };
-
-        float normals[] = {
-            0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1,
-            0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
-            -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0,
-            1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0,
-            0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
-            0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0
-        };
-
-        float texcoords[24 * 2];
-        int t = 0;
-        for (int f = 0; f < 6; f++) {
-            UVRect uv = GetAtlasUV(def.faceTile[f],
-                                   textureAtlas.width,
-                                   textureAtlas.height,
-                                   TILE_WIDTH,
-                                   TILE_HEIGHT);
-            bool flipV = (f >= 0 && f <= 3); // sides
-
-            for (int v = 0; v < 4; v++) {
-                float u = uv.u0 + (uv.u1 - uv.u0) * FACE_UVS[v].x;
-                float tv = uv.v0 + (uv.v1 - uv.v0) * (flipV ? 1.0f - FACE_UVS[v].y : FACE_UVS[v].y);
-                texcoords[t++] = u;
-                texcoords[t++] = tv;
-            }
-        }
-
-        unsigned char colors[24 * 4];
-        int c = 0;
-        for (int f = 0; f < 6; f++) {
-            float light = FACE_LIGHT[f];
-            for (int v = 0; v < 4; v++) {
-                if (def.tintTop && f == 4) {
-                    colors[c++] = (unsigned char) (light * 105.0f);
-                    colors[c++] = (unsigned char) (light * 175.0f);
-                    colors[c++] = (unsigned char) (light * 59.0f);
-                } else {
-                    unsigned char l = (unsigned char) (light * 255.0f);
-                    colors[c++] = l;
-                    colors[c++] = l;
-                    colors[c++] = l;
-                }
-                colors[c++] = 255;
-            }
-        }
-
-        // Allocate mesh
-        mesh.vertexCount = 24;
-        mesh.triangleCount = 12;
-        mesh.vertices = vertices;
-        mesh.normals = normals;
-        mesh.texcoords = texcoords;
-        mesh.colors = colors;
-        mesh.indices = indices;
-
-        UploadMesh(&mesh, false);
-
-        Model model = LoadModelFromMesh(mesh);
-        model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = textureAtlas;
-
-        blockModels[id] = model; // store prebuilt model
-    }
-}
-
-void Renderer::createCubeModel() {
-    // blockModels[BlockIds::ID_GRASS] = LoadModelFromMesh(createCubeMeshWithAtlas(BlockIds::ID_GRASS));
-    // blockModels[BlockIds::ID_DIRT]  = LoadModelFromMesh(createCubeMeshWithAtlas(BlockIds::ID_DIRT));
-    // blockModels[BlockIds::ID_STONE] = LoadModelFromMesh(createCubeMeshWithAtlas(BlockIds::ID_STONE));
-    //
-    // for (const auto& model: blockModels | std::views::values) {
-    //     model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = Renderer::textureAtlas;
-    // }
-}
-
-int Renderer::GetGrassTileForFace(int face) {
-    switch (face) {
-        case FACE_TOP: return 0; // grass top
-        case FACE_BOTTOM: return 2; // dirt
-        default: return 1; // grass side
-    }
-}
-
-bool Renderer::isFaceExposed(const Chunk &chunk, int x, int y, int z, int face) {
+// Update isFaceExposed to handle translucent blocks properly
+bool Renderer::isFaceExposed(const Chunk &chunk, int x, int y, int z, int face, bool isTranslucent) {
     int nx = x + dx[face];
     int ny = y + dy[face];
     int nz = z + dz[face];
@@ -176,10 +34,419 @@ bool Renderer::isFaceExposed(const Chunk &chunk, int x, int y, int z, int face) 
         nz < 0 || nz >= CHUNK_SIZE_Z)
         return true;
 
-    // Neighbor is air → exposed
-    return chunk.blockPosition[nx][ny][nz] == BlockIds::ID_AIR;
+    int neighborId = chunk.blockPosition[nx][ny][nz];
+
+    if (neighborId == ID_AIR) return true;
+
+    // If current block is translucent
+    if (isTranslucent) {
+        // Don't render face between same translucent blocks (e.g., water-water)
+        int currentId = chunk.blockPosition[x][y][z];
+        if (neighborId == currentId) return false;
+        // Render face if neighbor is different
+        return true;
+    }
+
+    // Opaque block: show face if neighbor is translucent or air
+    return isBlockTranslucent(neighborId);
 }
 
+// Build separate meshes for opaque and translucent
+// ChunkMeshPair Renderer::buildChunkMeshes(const Chunk &chunk) {
+//     ChunkMeshPair pair;
+//
+//     for (int x = 0; x < CHUNK_SIZE_X; x++) {
+//         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+//             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+//                 BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
+//                 if (id == ID_AIR) continue;
+//
+//                 auto def = blockTextureDefs.at(id);
+//                 bool translucent = isBlockTranslucent(id);
+//                 unsigned char alpha = getBlockAlpha(id);
+//
+//                 // Choose which buffer to add to
+//                 ChunkMeshBuffers &buf = translucent ? pair.translucent : pair.opaque;
+//
+//                 for (int f = 0; f < 6; f++) {
+//                     if (!isFaceExposed(chunk, x, y, z, f, translucent)) continue;
+//
+//                     AddFaceWithAlpha(buf,
+//                         (Vector3){(float)x, (float)y, (float)z},
+//                         f, def, FACE_LIGHT[f], def.tint, alpha);
+//                 }
+//             }
+//         }
+//     }
+//
+//     return pair;
+// }
+
+// Modified AddFace that supports alpha
+void Renderer::AddFaceWithAlpha(
+    ChunkMeshBuffers &buf,
+    const Vector3 &blockPos,
+    int face,
+    const BlockTextureDef &def,
+    float lightLevel,
+    Color tint,
+    unsigned char alpha
+) {
+    static const Vector3 FACE_VERTS[6][4] = {
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, // Front (-Z)
+        {{1, 0, 1}, {0, 0, 1}, {0, 1, 1}, {1, 1, 1}}, // Back (+Z)
+        {{0, 0, 1}, {0, 0, 0}, {0, 1, 0}, {0, 1, 1}}, // Left (-X)
+        {{1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {1, 1, 0}}, // Right (+X)
+        {{0, 1, 0}, {1, 1, 0}, {1, 1, 1}, {0, 1, 1}}, // Top (+Y)
+        {{0, 0, 1}, {1, 0, 1}, {1, 0, 0}, {0, 0, 0}}  // Bottom (-Y)
+    };
+
+    static const Vector3 FACE_NORMALS[6] = {
+        {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}
+    };
+
+    static const Vector2 FACE_UVS[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+
+    int idx = def.faceTile[face];
+    UVRect uv = GetAtlasUV(idx,
+                           Renderer::textureAtlas.width,
+                           Renderer::textureAtlas.height,
+                           TILE_WIDTH,
+                           TILE_HEIGHT);
+
+    int indexOffset = buf.vertices.size() / 3;
+    bool flipV = (face >= 0 && face <= 3);
+
+    for (int v = 0; v < 4; v++) {
+        Vector3 vert = Vector3Add(FACE_VERTS[face][v], blockPos);
+        buf.vertices.push_back(vert.x);
+        buf.vertices.push_back(vert.y);
+        buf.vertices.push_back(vert.z);
+
+        buf.normals.push_back(FACE_NORMALS[face].x);
+        buf.normals.push_back(FACE_NORMALS[face].y);
+        buf.normals.push_back(FACE_NORMALS[face].z);
+
+        float u = uv.u0 + (uv.u1 - uv.u0) * FACE_UVS[v].x;
+        float tv = uv.v0 + (uv.v1 - uv.v0) * (flipV ? 1.0f - FACE_UVS[v].y : FACE_UVS[v].y);
+        buf.texcoords.push_back(u);
+        buf.texcoords.push_back(tv);
+
+        // Apply tint and lighting
+        unsigned char r = (unsigned char)(tint.r * lightLevel);
+        unsigned char g = (unsigned char)(tint.g * lightLevel);
+        unsigned char b = (unsigned char)(tint.b * lightLevel);
+
+        buf.colors.push_back(r);
+        buf.colors.push_back(g);
+        buf.colors.push_back(b);
+        buf.colors.push_back(alpha);
+    }
+
+    buf.indices.push_back(indexOffset + 0);
+    buf.indices.push_back(indexOffset + 2);
+    buf.indices.push_back(indexOffset + 1);
+    buf.indices.push_back(indexOffset + 0);
+    buf.indices.push_back(indexOffset + 3);
+    buf.indices.push_back(indexOffset + 2);
+}
+
+// Update buildChunkMeshes to use tints
+ChunkMeshTriple Renderer::buildChunkMeshes(const Chunk &chunk) {
+    ChunkMeshTriple meshes;
+
+    for (int x = 0; x < CHUNK_SIZE_X; x++) {
+        for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+                BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
+                if (id == ID_AIR) continue;
+
+                auto defIt = blockTextureDefs.find(id);
+                if (defIt == blockTextureDefs.end()) continue;
+
+                const BlockTextureDef& def = defIt->second;
+                unsigned char alpha = getBlockAlpha(id);
+
+                // Choose which buffer
+                ChunkMeshBuffers* buf;
+                if (id == ID_WATER) {
+                    buf = &meshes.water;
+                } else if (isBlockTranslucent(id)) {
+                    buf = &meshes.translucent;
+                } else {
+                    buf = &meshes.opaque;
+                }
+
+                for (int f = 0; f < 6; f++) {
+                    if (!isFaceExposed(chunk, x, y, z, f)) continue;
+
+                    Color faceTint = getBlockFaceTint(id, f);
+
+                    AddFaceWithAlpha(*buf,
+                        (Vector3){(float)x, (float)y, (float)z},
+                        f, def, FACE_LIGHT[f], faceTint, alpha);
+                }
+            }
+        }
+    }
+
+    return meshes;
+}
+void Renderer::buildChunkModel(const Chunk &chunk) {
+    ChunkMeshTriple meshes = buildChunkMeshes(chunk);
+
+    // Debug output
+    std::println("Chunk ({}, {}) - opaque: {}, translucent: {}, water: {}",
+        chunk.chunkCoords.x, chunk.chunkCoords.z,
+        meshes.opaque.vertices.size() / 3,
+        meshes.translucent.vertices.size() / 3,
+        meshes.water.vertices.size() / 3);
+
+    // Build opaque model
+    if (chunk.opaqueModel.meshCount > 0 && IsModelValid(chunk.opaqueModel)) {
+        UnloadModel(chunk.opaqueModel);
+    }
+    if (!meshes.opaque.vertices.empty()) {
+        chunk.opaqueModel = buildModelFromBuffers(meshes.opaque);
+    } else {
+        chunk.opaqueModel = {0};
+    }
+
+    // Build translucent model
+    if (chunk.translucentModel.meshCount > 0 && IsModelValid(chunk.translucentModel)) {
+        UnloadModel(chunk.translucentModel);
+    }
+    if (!meshes.translucent.vertices.empty()) {
+        chunk.translucentModel = buildModelFromBuffers(meshes.translucent);
+    } else {
+        chunk.translucentModel = {0};
+    }
+
+    // Build water model
+    if (chunk.waterModel.meshCount > 0 && IsModelValid(chunk.waterModel)) {
+        UnloadModel(chunk.waterModel);
+    }
+    if (!meshes.water.vertices.empty()) {
+        chunk.waterModel = buildModelFromBuffers(meshes.water);
+        std::println("Water model built with {} meshes", chunk.waterModel.meshCount);
+    } else {
+        chunk.waterModel = {0};
+        std::println("No water vertices - model not built");
+    }
+}
+void Renderer::drawChunkTranslucent(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera) {
+    if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
+    if (!chunk->loaded) return;
+    if (chunk->translucentModel.meshCount == 0) return;
+
+    Vector3 worldPos = {
+        (float)(chunk->chunkCoords.x * CHUNK_SIZE_X),
+        0.0f,
+        (float)(chunk->chunkCoords.z * CHUNK_SIZE_Z)
+    };
+
+    // NO shader - just regular rendering for leaves/glass
+    DrawModel(chunk->translucentModel, worldPos, 1.0f, WHITE);
+}
+
+void Renderer::drawChunkWater(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera) {
+    if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
+    if (!chunk->loaded) return;
+    if (chunk->waterModel.meshCount == 0) return;
+
+    Vector3 worldPos = {
+        (float)(chunk->chunkCoords.x * CHUNK_SIZE_X),
+        0.0f,
+        (float)(chunk->chunkCoords.z * CHUNK_SIZE_Z)
+    };
+
+    // Apply water shader only to water
+    chunk->waterModel.materials[0].shader = waterShader;
+
+    DrawModel(chunk->waterModel, worldPos, 1.0f, WHITE);
+}
+Model Renderer::buildModelFromBuffers(ChunkMeshBuffers &buf) {
+    if (buf.vertices.empty()) {
+        return {0};
+    }
+
+    Mesh mesh = {0};
+    mesh.vertexCount = buf.vertices.size() / 3;
+    mesh.triangleCount = buf.indices.size() / 3;
+
+    mesh.vertices = (float *)MemAlloc(buf.vertices.size() * sizeof(float));
+    memcpy(mesh.vertices, buf.vertices.data(), buf.vertices.size() * sizeof(float));
+
+    mesh.normals = (float *)MemAlloc(buf.normals.size() * sizeof(float));
+    memcpy(mesh.normals, buf.normals.data(), buf.normals.size() * sizeof(float));
+
+    mesh.texcoords = (float *)MemAlloc(buf.texcoords.size() * sizeof(float));
+    memcpy(mesh.texcoords, buf.texcoords.data(), buf.texcoords.size() * sizeof(float));
+
+    mesh.colors = (unsigned char *)MemAlloc(buf.colors.size());
+    memcpy(mesh.colors, buf.colors.data(), buf.colors.size());
+
+    mesh.indices = (unsigned short *)MemAlloc(buf.indices.size() * sizeof(unsigned short));
+    memcpy(mesh.indices, buf.indices.data(), buf.indices.size() * sizeof(unsigned short));
+
+    UploadMesh(&mesh, true);
+
+    Model model = LoadModelFromMesh(mesh);
+    model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = textureAtlas;
+
+    return model;
+}
+
+// Draw opaque parts
+void Renderer::drawChunkOpaque(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera) {
+    if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
+    if (!chunk->loaded) return;
+
+    chunk->alpha += GetFrameTime() * 2.0f;
+    if (chunk->alpha > 1.0f) chunk->alpha = 1.0f;
+
+    Vector3 worldPos = {
+        (float)(chunk->chunkCoords.x * CHUNK_SIZE_X),
+        0.0f,
+        (float)(chunk->chunkCoords.z * CHUNK_SIZE_Z)
+    };
+
+    Color tint = WHITE;
+    tint.a = (unsigned char)(chunk->alpha * 255);
+
+    if (chunk->opaqueModel.meshCount > 0) {
+        DrawModel(chunk->opaqueModel, worldPos, 1.0f, tint);
+    }
+}
+
+
+// Main draw function that handles render order
+void Renderer::drawAllChunks(const Camera3D &camera) {
+    // First pass: draw all opaque geometry
+    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
+        if (chunk) {
+            drawChunkOpaque(chunk, camera);
+        }
+    }
+
+    // Sort translucent chunks by distance from camera (back to front)
+    std::vector<std::pair<float, ChunkCoord>> translucentChunks;
+    std::vector<std::pair<float, ChunkCoord>> waterChunks;
+
+    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
+        if (chunk && chunk->translucentModel.meshCount > 0 || chunk->waterModel.meshCount > 0) {
+            Vector3 chunkCenter = {
+                (float)(coord.x * CHUNK_SIZE_X + CHUNK_SIZE_X / 2),
+                CHUNK_SIZE_Y / 2.0f,
+                (float)(coord.z * CHUNK_SIZE_Z + CHUNK_SIZE_Z / 2)
+            };
+            float dist = Vector3DistanceSqr(camera.position, chunkCenter);
+            translucentChunks.push_back({dist, coord});
+        }
+    }
+
+    // Sort back to front (furthest first)
+    std::sort(translucentChunks.begin(), translucentChunks.end(),
+        [](const auto &a, const auto &b) { return a.first > b.first; });
+
+    // Enable blending for translucent geometry
+    rlDisableDepthMask();  // Don't write to depth buffer for translucent
+    rlEnableColorBlend();
+    rlSetBlendMode(BLEND_ALPHA);
+
+    // Second pass: draw translucent geometry back to front
+    for (auto &[dist, coord] : translucentChunks) {
+        auto it = ChunkHelper::activeChunks.find(coord);
+        if (it != ChunkHelper::activeChunks.end() && it->second) {
+            if (it->second->translucentModel.meshCount > 0) {
+                drawChunkTranslucent(it->second, camera);
+            }
+            if (it->second->waterModel.meshCount > 0) {
+                drawChunkWater(it->second, camera);
+            }
+        }
+    }
+
+    // Restore state
+    rlEnableDepthMask();
+    rlSetBlendMode(BLEND_ALPHA);
+}
+
+
+// void Renderer::drawChunk(const std::unique_ptr<Chunk> &chunk, const Camera3D &camera) {
+//     if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
+//     if (!chunk->loaded) return;
+//
+//
+//     chunk->alpha += GetFrameTime() * 2.0f; // fade-in over ~0.5 seconds
+//     if (chunk->alpha > 1.0f) chunk->alpha = 1.0f;
+//
+//     Vector3 worldPos = {
+//         (float) (chunk->chunkCoords.x * CHUNK_SIZE_X),
+//         0.0f,
+//         (float) (chunk->chunkCoords.z * CHUNK_SIZE_Z)
+//     };
+//
+//     Color tint = WHITE;
+//     tint.a = (unsigned char) (chunk->alpha * 255);
+//
+//     // std::println("Drawing chunk: {}, {}", chunk->chunkCoords.x, chunk->chunkCoords.z);
+//     DrawModel(chunk->model, worldPos, 1.0f, tint);
+// }
+
+UVRect Renderer::GetTileUV(int tileIndex, int atlasWidth, int atlasHeight, int tileSize) {
+    float u0 = 0.0f;
+    float u1 = 1.0f; // full width
+    float v0 = (float) (tileIndex * tileSize) / (float) atlasHeight;
+    float v1 = (float) ((tileIndex + 1) * tileSize) / (float) atlasHeight;
+    return {u0, v0, u1, v1};
+}
+
+bool Renderer::isFaceExposed(const Chunk &chunk, int x, int y, int z, int face) {
+    int nx = x + dx[face];
+    int ny = y + dy[face];
+    int nz = z + dz[face];
+
+    // Outside chunk = exposed
+    if (nx < 0 || nx >= CHUNK_SIZE_X ||
+        ny < 0 || ny >= CHUNK_SIZE_Y ||
+        nz < 0 || nz >= CHUNK_SIZE_Z)
+        return true;
+
+    int currentId = chunk.blockPosition[x][y][z];
+    int neighborId = chunk.blockPosition[nx][ny][nz];
+
+    // Air neighbor = always exposed
+    if (neighborId == ID_AIR) return true;
+
+    // Current block is water
+    if (currentId == ID_WATER) {
+        // Water next to water = don't show face (except top)
+        if (neighborId == ID_WATER) {
+            return false;
+        }
+        // Water next to anything else = show face
+        return true;
+    }
+
+    // Current block is translucent (leaves, glass)
+    if (isBlockTranslucent(static_cast<BlockIds>(currentId))) {
+        // Translucent next to same type = don't show
+        if (currentId == neighborId) {
+            return false;
+        }
+        // Translucent next to air or different block = show
+        return true;
+    }
+
+    // Opaque block next to translucent = show face
+    if (isBlockTranslucent(static_cast<BlockIds>(neighborId))) {
+        return true;
+    }
+
+    // Opaque next to opaque = don't show
+    return false;
+}
 
 Plane Renderer::normalizePlane(const Plane &plane) {
     float len = Vector3Length(plane.normal);
@@ -317,109 +584,136 @@ void Renderer::unloadChunks(const Camera3D &camera) {
 
     std::vector<ChunkCoord> toRemove;
 
-    for (const auto &[coord, chunk]: ChunkHelper::activeChunks) {
+    for (const auto &[coord, chunk] : ChunkHelper::activeChunks) {
         int dx = coord.x - playerChunk.x;
         int dz = coord.z - playerChunk.z;
 
         if (abs(dx) > Settings::unloadDistance ||
             abs(dz) > Settings::unloadDistance) {
-            // 🔒 Only unload fully built chunks
             if (chunk && chunk->loaded) {
                 toRemove.push_back(coord);
             }
         }
     }
 
-    for (const auto &coord: toRemove) {
+    for (const auto &coord : toRemove) {
         auto it = ChunkHelper::activeChunks.find(coord);
         if (it == ChunkHelper::activeChunks.end()) continue;
 
-        // MUST be main thread
-        if (IsModelValid(it->second->model)) {
-            assert(it->second->model.meshCount > 0);
-            UnloadModel(it->second->model);
-            it->second->loaded = false;
-            ChunkHelper::activeChunks.erase(it);
-        };
-    }
-}
-
-int Renderer::worldToChunk(float v, int chunkSize) {
-    int i = (int) floor(v);
-    return (i >= 0) ? (i / chunkSize) : ((i - chunkSize + 1) / chunkSize);
-}
-
-void Renderer::renderAsyncChunks() {
-    while (!ChunkHelper::chunkBuildQueue.empty()) {
-        std::unique_ptr<Chunk> chunk;
-        while (ChunkHelper::chunkBuildQueue.try_pop(chunk)) {
-            chunk->model = buildChunkModel(*chunk);
-            chunk->loaded = true;
-            chunk->alpha = 0.0f;
-
-            replaceChunk(chunk->chunkCoords, std::move(chunk));
+        // Unload both models
+        if (it->second->opaqueModel.meshCount > 0 && IsModelValid(it->second->opaqueModel)) {
+            UnloadModel(it->second->opaqueModel);
         }
-    }
-}
+        if (it->second->translucentModel.meshCount > 0 && IsModelValid(it->second->translucentModel)) {
+            UnloadModel(it->second->translucentModel);
+        }
+        if (it->second->waterModel.meshCount > 0 && IsModelValid(it->second->waterModel)) {
+            UnloadModel(it->second->waterModel);
+        }
 
-// Renderer static init
-void Renderer::init() {
-    ChunkHelper::workerRunning = true;
+        it->second->loaded = false;
+        ChunkHelper::activeChunks.erase(it);
+    }
 }
 
 void Renderer::shutdown() {
-    // Stop workers first
     ChunkHelper::workerRunning = false;
     ChunkHelper::chunkRequestQueue.notifyAll();
 
-    for (auto &t: Renderer::workers) {
+    for (auto &t : Renderer::workers) {
         if (t.joinable()) t.join();
     }
     Renderer::workers.clear();
 
-    // Unload all active chunks safely
     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
-    for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
+    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
         if (!chunk) continue;
 
-        // Only unload if meshCount > 0
-        if (chunk->model.meshCount > 0 && IsModelValid(chunk->model)) {
-            UnloadModel(chunk->model);
-            chunk->model.meshCount = 0; // mark as unloaded
+        if (chunk->opaqueModel.meshCount > 0 && IsModelValid(chunk->opaqueModel)) {
+            UnloadModel(chunk->opaqueModel);
+        }
+        if (chunk->translucentModel.meshCount > 0 && IsModelValid(chunk->translucentModel)) {
+            UnloadModel(chunk->translucentModel);
         }
     }
     ChunkHelper::activeChunks.clear();
 
-    // Unload texture atlas safely
     if (textureAtlas.id > 0 && IsTextureValid(textureAtlas)) {
         UnloadTexture(textureAtlas);
         textureAtlas.id = 0;
     }
 }
-
-void Renderer::chunkWorkerThread() {
-    while (ChunkHelper::workerRunning) {
-        std::optional<ChunkCoord> coordOpt = ChunkHelper::chunkRequestQueue.wait_pop(ChunkHelper::workerRunning);
-        ChunkCoord coord;
-        if (!coordOpt.has_value()) continue;
-
-        coord = coordOpt.value();
-        auto chunk = std::make_unique<Chunk>();
-        chunk->chunkCoords = coord;
-
-        ChunkHelper::generateChunkTerrain(chunk);
-        ChunkHelper::populateTrees(chunk);
-
-        chunk->dirty = true;
-
-        ChunkHelper::chunkBuildQueue.push(std::move(chunk));
-
-        {
-            std::lock_guard<std::mutex> lock(ChunkHelper::chunkRequestSetMutex);
-            ChunkHelper::chunkRequestSet.erase(coord);
-        }
-    }
+int Renderer::worldToChunk(float v, int chunkSize) {
+    int i = (int) floor(v);
+    return (i >= 0) ? (i / chunkSize) : ((i - chunkSize + 1) / chunkSize);
 }
+
+// void Renderer::renderAsyncChunks() {
+//     while (!ChunkHelper::chunkBuildQueue.empty()) {
+//         std::unique_ptr<Chunk> chunk;
+//         while (ChunkHelper::chunkBuildQueue.try_pop(chunk)) {
+//             chunk->model = buildChunkModel(*chunk);
+//             chunk->loaded = true;
+//             chunk->alpha = 0.0f;
+//
+//             replaceChunk(chunk->chunkCoords, std::move(chunk));
+//         }
+//     }
+// }
+
+// void Renderer::shutdown() {
+//     // Stop workers first
+//     ChunkHelper::workerRunning = false;
+//     ChunkHelper::chunkRequestQueue.notifyAll();
+//
+//     for (auto &t: Renderer::workers) {
+//         if (t.joinable()) t.join();
+//     }
+//     Renderer::workers.clear();
+//
+//     // Unload all active chunks safely
+//     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+//     for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
+//         if (!chunk) continue;
+//
+//         // Only unload if meshCount > 0
+//         if (chunk->model.meshCount > 0 && IsModelValid(chunk->model)) {
+//             UnloadModel(chunk->model);
+//             chunk->model.meshCount = 0; // mark as unloaded
+//         }
+//     }
+//     ChunkHelper::activeChunks.clear();
+//
+//     // Unload texture atlas safely
+//     if (textureAtlas.id > 0 && IsTextureValid(textureAtlas)) {
+//         UnloadTexture(textureAtlas);
+//         textureAtlas.id = 0;
+//     }
+// }
+
+// void Renderer::chunkWorkerThread() {
+//     while (ChunkHelper::workerRunning) {
+//         std::optional<ChunkCoord> coordOpt = ChunkHelper::chunkRequestQueue.wait_pop(ChunkHelper::workerRunning);
+//         ChunkCoord coord;
+//         if (!coordOpt.has_value()) continue;
+//
+//         coord = coordOpt.value();
+//         auto chunk = std::make_unique<Chunk>();
+//         chunk->chunkCoords = coord;
+//
+//         ChunkHelper::generateChunkTerrain(chunk);
+//         ChunkHelper::populateTrees(chunk);
+//
+//         chunk->dirty = true;
+//
+//         ChunkHelper::chunkBuildQueue.push(std::move(chunk));
+//
+//         {
+//             std::lock_guard<std::mutex> lock(ChunkHelper::chunkRequestSetMutex);
+//             ChunkHelper::chunkRequestSet.erase(coord);
+//         }
+//     }
+// }
 
 void Renderer::initChunkWorkers(int threadCount) {
     ChunkHelper::workerRunning = true;
@@ -438,29 +732,29 @@ void Renderer::initChunkWorkers(int threadCount) {
     }
 }
 
-void Renderer::shutdownChunkWorkers() {
-    ChunkHelper::workerRunning = false;
-
-    ChunkHelper::chunkRequestQueue.notifyAll();
-
-    for (auto &t: workers)
-        if (t.joinable()) t.join();
-
-    workers.clear();
-
-    std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
-    for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
-        if (chunk && IsModelValid(chunk->model)) {
-            UnloadModel(chunk->model);
-        }
-    }
-
-    ChunkHelper::activeChunks.clear();
-
-    if (IsTextureValid(textureAtlas)) {
-        UnloadTexture(textureAtlas);
-    }
-}
+// void Renderer::shutdownChunkWorkers() {
+//     ChunkHelper::workerRunning = false;
+//
+//     ChunkHelper::chunkRequestQueue.notifyAll();
+//
+//     for (auto &t: workers)
+//         if (t.joinable()) t.join();
+//
+//     workers.clear();
+//
+//     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+//     for (auto &[coord, chunk]: ChunkHelper::activeChunks) {
+//         if (chunk && IsModelValid(chunk->model)) {
+//             UnloadModel(chunk->model);
+//         }
+//     }
+//
+//     ChunkHelper::activeChunks.clear();
+//
+//     if (IsTextureValid(textureAtlas)) {
+//         UnloadTexture(textureAtlas);
+//     }
+// }
 
 void Renderer::processChunkBuildQueue(const Camera3D &camera) {
     constexpr int MAX_CHUNKS_PER_FRAME = 2;
@@ -479,7 +773,9 @@ void Renderer::processChunkBuildQueue(const Camera3D &camera) {
             break;
         }
 
-        chunk->model = buildChunkModel(*chunk);
+        // Build all three models
+        buildChunkModel(*chunk);
+
         chunk->loaded = true;
         chunk->dirty = false;
         chunk->alpha = 0.0f;
@@ -488,7 +784,6 @@ void Renderer::processChunkBuildQueue(const Camera3D &camera) {
         processed++;
     }
 }
-
 ChunkCoord Renderer::getPlayerChunkCoord(const Camera3D &camera) {
     auto worldToChunk = [](float v, int chunkSize) {
         int i = (int) floor(v);
@@ -579,55 +874,55 @@ void Renderer::AddFace(
 }
 
 // Build a chunk model using the above AddFace
-Model Renderer::buildChunkModel(const Chunk &chunk) {
-    ChunkMeshBuffers buf;
-
-    for (int x = 0; x < CHUNK_SIZE_X; x++)
-        for (int y = 0; y < CHUNK_SIZE_Y; y++)
-            for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-                BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
-                if (id == ID_AIR) continue;
-
-                auto def = blockTextureDefs.at(id);
-
-                for (int f = 0; f < 6; f++) {
-                    if (!Renderer::isFaceExposed(chunk, x, y, z, f)) continue;
-
-                    // int tile = def.faceTile[f];   // Correct tile per face
-                    bool tintTop = def.tintTop;
-
-                    AddFace(buf, (Vector3){(float) x, (float) y, (float) z}, f, def, FACE_LIGHT[f], tintTop);
-                }
-            }
-
-    // Upload mesh
-    Mesh mesh = {0};
-    mesh.vertexCount = buf.vertices.size() / 3;
-    mesh.triangleCount = buf.indices.size() / 3;
-
-    mesh.vertices = (float *) MemAlloc(buf.vertices.size() * sizeof(float));
-    memcpy(mesh.vertices, buf.vertices.data(), buf.vertices.size() * sizeof(float));
-
-    mesh.normals = (float *) MemAlloc(buf.normals.size() * sizeof(float));
-    memcpy(mesh.normals, buf.normals.data(), buf.normals.size() * sizeof(float));
-
-    mesh.texcoords = (float *) MemAlloc(buf.texcoords.size() * sizeof(float));
-    memcpy(mesh.texcoords, buf.texcoords.data(), buf.texcoords.size() * sizeof(float));
-
-    mesh.colors = (unsigned char *) MemAlloc(buf.colors.size());
-    memcpy(mesh.colors, buf.colors.data(), buf.colors.size());
-
-    mesh.indices = (unsigned short *) MemAlloc(buf.indices.size() * sizeof(unsigned short));
-    memcpy(mesh.indices, buf.indices.data(), buf.indices.size() * sizeof(unsigned short));
-
-
-    UploadMesh(&mesh, true);
-
-    Model model = LoadModelFromMesh(mesh);
-    model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = textureAtlas;
-
-    return model;
-}
+// Model Renderer::buildChunkModel(const Chunk &chunk) {
+//     ChunkMeshBuffers buf;
+//
+//     for (int x = 0; x < CHUNK_SIZE_X; x++)
+//         for (int y = 0; y < CHUNK_SIZE_Y; y++)
+//             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+//                 BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
+//                 if (id == ID_AIR) continue;
+//
+//                 auto def = blockTextureDefs.at(id);
+//
+//                 for (int f = 0; f < 6; f++) {
+//                     if (!Renderer::isFaceExposed(chunk, x, y, z, f)) continue;
+//
+//                     // int tile = def.faceTile[f];   // Correct tile per face
+//                     bool tintTop = def.tintTop;
+//
+//                     AddFace(buf, (Vector3){(float) x, (float) y, (float) z}, f, def, FACE_LIGHT[f], tintTop);
+//                 }
+//             }
+//
+//     // Upload mesh
+//     Mesh mesh = {0};
+//     mesh.vertexCount = buf.vertices.size() / 3;
+//     mesh.triangleCount = buf.indices.size() / 3;
+//
+//     mesh.vertices = (float *) MemAlloc(buf.vertices.size() * sizeof(float));
+//     memcpy(mesh.vertices, buf.vertices.data(), buf.vertices.size() * sizeof(float));
+//
+//     mesh.normals = (float *) MemAlloc(buf.normals.size() * sizeof(float));
+//     memcpy(mesh.normals, buf.normals.data(), buf.normals.size() * sizeof(float));
+//
+//     mesh.texcoords = (float *) MemAlloc(buf.texcoords.size() * sizeof(float));
+//     memcpy(mesh.texcoords, buf.texcoords.data(), buf.texcoords.size() * sizeof(float));
+//
+//     mesh.colors = (unsigned char *) MemAlloc(buf.colors.size());
+//     memcpy(mesh.colors, buf.colors.data(), buf.colors.size());
+//
+//     mesh.indices = (unsigned short *) MemAlloc(buf.indices.size() * sizeof(unsigned short));
+//     memcpy(mesh.indices, buf.indices.data(), buf.indices.size() * sizeof(unsigned short));
+//
+//
+//     UploadMesh(&mesh, true);
+//
+//     Model model = LoadModelFromMesh(mesh);
+//     model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = textureAtlas;
+//
+//     return model;
+// }
 
 // Compute the UV rect of a tile in a scalable atlas
 UVRect Renderer::GetAtlasUV(int tileIndex, int atlasWidth, int atlasHeight, int tileWidth, int tileHeight) {
@@ -653,14 +948,19 @@ void Renderer::replaceChunk(const ChunkCoord &coord, std::unique_ptr<Chunk> newC
 
     auto it = ChunkHelper::activeChunks.find(coord);
     if (it != ChunkHelper::activeChunks.end() && it->second) {
-        if (it->second->model.meshCount > 0) {
-            UnloadModel(it->second->model);
+        if (it->second->opaqueModel.meshCount > 0 && IsModelValid(it->second->opaqueModel)) {
+            UnloadModel(it->second->opaqueModel);
+        }
+        if (it->second->translucentModel.meshCount > 0 && IsModelValid(it->second->translucentModel)) {
+            UnloadModel(it->second->translucentModel);
+        }
+        if (it->second->waterModel.meshCount > 0 && IsModelValid(it->second->waterModel)) {
+            UnloadModel(it->second->waterModel);
         }
     }
 
     ChunkHelper::activeChunks[coord] = std::move(newChunk);
 }
-
 void Renderer::drawCrosshair() {
     float screenMiddleY = (float) GetScreenHeight() / 2.0f;
     float screenMiddleX = (float) GetScreenWidth() / 2.0f;
@@ -671,4 +971,79 @@ void Renderer::drawCrosshair() {
     float chHorzDraw = screenMiddleY - (crosshairWidth / 2.0f);
 
     DrawRectangleV({chVertDraw, chHorzDraw}, {crosshairWidth, crosshairWidth}, WHITE);
+}
+// In Chunk.cpp
+void Renderer::rebuildDirtyChunks() {
+    std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+
+    for (auto &[coord, chunk] : ChunkHelper::activeChunks) {
+        if (!chunk || !chunk->dirty) continue;
+
+        // Unload old models
+        if (chunk->opaqueModel.meshCount > 0 && IsModelValid(chunk->opaqueModel)) {
+            UnloadModel(chunk->opaqueModel);
+            chunk->opaqueModel = {0};
+        }
+        if (chunk->translucentModel.meshCount > 0 && IsModelValid(chunk->translucentModel)) {
+            UnloadModel(chunk->translucentModel);
+            chunk->translucentModel = {0};
+        }
+
+        // Rebuild both models
+        buildChunkModel(*chunk);
+
+        chunk->dirty = false;
+        chunk->loaded = true;
+    }
+}
+
+Shader Renderer::waterShader = {0};
+int Renderer::waterTimeLoc = 0;
+
+void Renderer::initWaterShader() {
+    const char* vsCode = R"(
+        #version 330
+        in vec3 vertexPosition;
+        in vec2 vertexTexCoord;
+        in vec4 vertexColor;
+        out vec2 fragTexCoord;
+        out vec4 fragColor;
+        uniform mat4 mvp;
+        void main() {
+            fragTexCoord = vertexTexCoord;
+            fragColor = vertexColor;
+            gl_Position = mvp * vec4(vertexPosition, 1.0);
+        }
+    )";
+
+    const char* fsCode = R"(
+        #version 330
+        in vec2 fragTexCoord;
+        in vec4 fragColor;
+        out vec4 finalColor;
+        uniform sampler2D texture0;
+        uniform float waterTime;
+
+        void main() {
+            float tileHeight = 0.025;
+            int frameCount = 31;
+
+            int frame = int(mod(waterTime * 10.0, float(frameCount)));
+
+            vec2 animUV = fragTexCoord;
+            animUV.y += float(frame) * tileHeight;
+
+            vec4 texColor = texture(texture0, animUV);
+
+            // Preserve vertex color alpha (water transparency)
+            finalColor = vec4(texColor.rgb * fragColor.rgb, fragColor.a);
+        }
+    )";
+
+    waterShader = LoadShaderFromMemory(vsCode, fsCode);
+    waterTimeLoc = GetShaderLocation(waterShader, "waterTime");
+}
+
+void Renderer::updateWaterShader(float time) {
+    SetShaderValue(waterShader, waterTimeLoc, &time, SHADER_UNIFORM_FLOAT);
 }
