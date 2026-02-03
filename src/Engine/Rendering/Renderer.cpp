@@ -5,8 +5,8 @@
 #include "Renderer.hpp"
 
 #include "../../include/Block/Blocks.hpp"
-#include "Common.hpp"
 #include "../Engine/Settings.hpp"
+#include "Common.hpp"
 #include <algorithm>
 #include <iostream>
 #include <ostream>
@@ -30,9 +30,20 @@ Texture2D Renderer::textureAtlas = {};
 std::vector<std::thread> Renderer::workers;
 
 NeighborEdgeData Renderer::cacheNeighborEdges(const ChunkCoord& coord) {
+    // Assumes activeChunksMutex is already held!
     NeighborEdgeData data;
-    auto it = ChunkHelper::activeChunks.find({coord.x - 1, coord.z});
-    if (it != ChunkHelper::activeChunks.end() && it->second) {
+
+    // Initialize all flags to false
+    data.hasNegX = false;
+    data.hasPosX = false;
+    data.hasNegZ = false;
+    data.hasPosZ = false;
+
+    auto& activeChunks = ChunkHelper::activeChunks;
+
+    // -X neighbor
+    auto it = activeChunks.find({coord.x - 1, coord.z});
+    if (it != activeChunks.end() && it->second && it->second->loaded) {
         data.hasNegX = true;
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
@@ -42,8 +53,9 @@ NeighborEdgeData Renderer::cacheNeighborEdges(const ChunkCoord& coord) {
         }
     }
 
-    it = ChunkHelper::activeChunks.find({coord.x + 1, coord.z});
-    if (it != ChunkHelper::activeChunks.end() && it->second) {
+    // +X neighbor
+    it = activeChunks.find({coord.x + 1, coord.z});
+    if (it != activeChunks.end() && it->second && it->second->loaded) {
         data.hasPosX = true;
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
@@ -53,8 +65,9 @@ NeighborEdgeData Renderer::cacheNeighborEdges(const ChunkCoord& coord) {
         }
     }
 
-    it = ChunkHelper::activeChunks.find({coord.x, coord.z - 1});
-    if (it != ChunkHelper::activeChunks.end() && it->second) {
+    // -Z neighbor
+    it = activeChunks.find({coord.x, coord.z - 1});
+    if (it != activeChunks.end() && it->second && it->second->loaded) {
         data.hasNegZ = true;
         for (int x = 0; x < CHUNK_SIZE_X; x++) {
             for (int y = 0; y < CHUNK_SIZE_Y; y++) {
@@ -64,8 +77,9 @@ NeighborEdgeData Renderer::cacheNeighborEdges(const ChunkCoord& coord) {
         }
     }
 
-    it = ChunkHelper::activeChunks.find({coord.x, coord.z + 1});
-    if (it != ChunkHelper::activeChunks.end() && it->second) {
+    // +Z neighbor
+    it = activeChunks.find({coord.x, coord.z + 1});
+    if (it != activeChunks.end() && it->second && it->second->loaded) {
         data.hasPosZ = true;
         for (int x = 0; x < CHUNK_SIZE_X; x++) {
             for (int y = 0; y < CHUNK_SIZE_Y; y++) {
@@ -77,7 +91,6 @@ NeighborEdgeData Renderer::cacheNeighborEdges(const ChunkCoord& coord) {
 
     return data;
 }
-
 void Renderer::buildMeshData(Chunk& chunk, const NeighborEdgeData& neighbors) {
     auto meshData = std::make_unique<ChunkMeshTriple>();
     *meshData = buildChunkMeshesInternal(chunk, neighbors);
@@ -159,41 +172,65 @@ void Renderer::uploadMeshToGPU(Chunk& chunk, const ChunkMeshTriple& meshData) {
 
 bool Renderer::isFaceExposed(const Chunk& chunk, int x, int y, int z, int face, bool isTranslucent,
                              const NeighborEdgeData& neighbors) {
+    static const int dx[] = {-1, 1, 0, 0, 0, 0};
+    static const int dy[] = {0, 0, -1, 1, 0, 0};
+    static const int dz[] = {0, 0, 0, 0, -1, 1};
+
     int nx = x + dx[face];
     int ny = y + dy[face];
     int nz = z + dz[face];
 
-    if (ny < 0 || ny >= CHUNK_SIZE_Y) return true;
+    // Above/below chunk bounds
+    if (ny < 0) return false;
+    if (ny >= CHUNK_SIZE_Y) return true;
 
-    int neighborId;
+    int neighborBlock;
 
+    // Check if neighbor is in adjacent chunk
     if (nx < 0) {
-        if (!neighbors.hasNegX) return true; // CHANGE: Show face if no neighbor data
-        neighborId = neighbors.getBlockNegX(ny, nz);
+        if (!neighbors.hasNegX) {
+            return true; // No neighbor data - show face (will rebuild later)
+        }
+        neighborBlock = neighbors.getBlockNegX(ny, nz);
     } else if (nx >= CHUNK_SIZE_X) {
-        if (!neighbors.hasPosX) return true; // CHANGE: Show face if no neighbor data
-        neighborId = neighbors.getBlockPosX(ny, nz);
+        if (!neighbors.hasPosX) {
+            return true; // No neighbor data - show face
+        }
+        neighborBlock = neighbors.getBlockPosX(ny, nz);
     } else if (nz < 0) {
-        if (!neighbors.hasNegZ) return true; // CHANGE: Show face if no neighbor data
-        neighborId = neighbors.getBlockNegZ(nx, ny);
+        if (!neighbors.hasNegZ) {
+            return true; // No neighbor data - show face
+        }
+        neighborBlock = neighbors.getBlockNegZ(nx, ny);
     } else if (nz >= CHUNK_SIZE_Z) {
-        if (!neighbors.hasPosZ) return true; // CHANGE: Show face if no neighbor data
-        neighborId = neighbors.getBlockPosZ(nx, ny);
+        if (!neighbors.hasPosZ) {
+            return true; // No neighbor data - show face
+        }
+        neighborBlock = neighbors.getBlockPosZ(nx, ny);
     } else {
-        neighborId = chunk.blockPosition[nx][ny][nz];
+        // Within same chunk
+        neighborBlock = chunk.blockPosition[nx][ny][nz];
     }
 
-    if (neighborId == ID_AIR) return true;
+    // Air always exposes face
+    if (neighborBlock == ID_AIR) return true;
 
+    // Water handling
+    if (neighborBlock == ID_WATER) {
+        if (isTranslucent) {
+            int currentBlock = chunk.blockPosition[x][y][z];
+            return currentBlock != ID_WATER; // Water doesn't show face against water
+        }
+        return true; // Solid blocks show face against water
+    }
+
+    // Translucent blocks
     if (isTranslucent) {
-        int currentId = chunk.blockPosition[x][y][z];
-        if (neighborId == currentId) return false;
-        return true;
+        return isBlockTranslucent((BlockIds)neighborBlock);
     }
 
-    return isBlockTranslucent(static_cast<BlockIds>(neighborId));
+    return false;
 }
-
 void Renderer::AddFaceWithAlpha(ChunkMeshBuffers& buf, const Vector3& blockPos, int face,
                                 const BlockTextureDef& def, float lightLevel, Color tint,
                                 unsigned char alpha, const Chunk& chunk,
@@ -721,28 +758,26 @@ UVRect Renderer::GetAtlasUV(int tileIndex, int atlasWidth, int atlasHeight, int 
     return {u0, v0, u1, v1};
 }
 
-void Renderer::replaceChunk(const ChunkCoord& coord, std::unique_ptr<Chunk> newChunk) {
+void Renderer::replaceChunk(const ChunkCoord& coord, std::unique_ptr<Chunk> chunk) {
     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
 
-    try {
-        auto it = ChunkHelper::activeChunks.find(coord);
-        if (it != ChunkHelper::activeChunks.end() && it->second) {
-            if (it->second->opaqueModel.meshCount > 0 && IsModelValid(it->second->opaqueModel)) {
-                UnloadModel(it->second->opaqueModel);
-            }
-            if (it->second->translucentModel.meshCount > 0 &&
-                IsModelValid(it->second->translucentModel)) {
-                UnloadModel(it->second->translucentModel);
-            }
-            if (it->second->waterModel.meshCount > 0 && IsModelValid(it->second->waterModel)) {
-                UnloadModel(it->second->waterModel);
-            }
+    auto it = ChunkHelper::activeChunks.find(coord);
+    if (it != ChunkHelper::activeChunks.end() && it->second) {
+        // Unload old models before replacing
+        if (it->second->opaqueModel.meshCount > 0) {
+            UnloadModel(it->second->opaqueModel);
         }
-    } catch (...) {
-        std::cerr << "Map access crashed!" << std::endl;
+        if (it->second->translucentModel.meshCount > 0) {
+            UnloadModel(it->second->translucentModel);
+        }
+        if (it->second->waterModel.meshCount > 0) {
+            UnloadModel(it->second->waterModel);
+        }
+        printf("DEBUG replaceChunk: Replacing existing chunk at (%d, %d)\n", coord.x, coord.z);
     }
 
-    ChunkHelper::activeChunks[coord] = std::move(newChunk);
+    ChunkHelper::activeChunks[coord] = std::move(chunk);
+    printf("DEBUG replaceChunk: Added chunk at (%d, %d)\n", coord.x, coord.z);
 }
 
 void Renderer::drawCrosshair() {
@@ -868,61 +903,66 @@ void Renderer::shutdownMeshThreadPool() {
     }
 }
 
-void Renderer::buildChunkMeshAsync(Chunk& chunk) {
-    if (chunk.meshBuilding.exchange(true)) return;
-
-    NeighborEdgeData neighbors = cacheNeighborEdges(chunk.chunkCoords);
-
-#ifndef NDEBUG
-    printf("DEBUG: Building mesh for (%d,%d) - neighbors: -X=%d +X=%d -Z=%d +Z=%d\n",
-           chunk.chunkCoords.x, chunk.chunkCoords.z, neighbors.hasNegX, neighbors.hasPosX,
-           neighbors.hasNegZ, neighbors.hasPosZ);
-#endif
-
-    auto meshData = std::make_unique<ChunkMeshTriple>();
-    *meshData = buildChunkMeshesInternal(chunk, neighbors);
-
-    chunk.pendingMeshData = std::move(meshData);
-    chunk.meshBuilding = false;
-    chunk.meshReady = true;
-}
+// void Renderer::buildChunkMeshAsync(Chunk& chunk) {
+//     if (chunk.meshBuilding.exchange(true)) return;
+//
+//     // Cache neighbor data - but handle missing neighbors gracefully
+//     NeighborEdgeData neighbors = cacheNeighborEdges(chunk.chunkCoords);
+//
+//     // Build mesh even if some neighbors are missing
+//     auto meshData = std::make_unique<ChunkMeshTriple>();
+//     *meshData = buildChunkMeshesInternal(chunk, neighbors);
+//
+//     chunk.pendingMeshData = std::move(meshData);
+//     chunk.meshBuilding = false;
+//     chunk.meshReady = true;
+// }
 
 void Renderer::uploadMeshToGPU(Chunk& chunk) {
-    if (!chunk.pendingMeshData) return;
+    if (!chunk.pendingMeshData) {
+        return;
+    }
 
     // Unload old models
-    if (chunk.opaqueModel.meshCount > 0 && IsModelValid(chunk.opaqueModel)) {
+    if (chunk.opaqueModel.meshCount > 0) {
         UnloadModel(chunk.opaqueModel);
         chunk.opaqueModel = {0};
     }
-    if (chunk.translucentModel.meshCount > 0 && IsModelValid(chunk.translucentModel)) {
+    if (chunk.translucentModel.meshCount > 0) {
         UnloadModel(chunk.translucentModel);
         chunk.translucentModel = {0};
     }
-    if (chunk.waterModel.meshCount > 0 && IsModelValid(chunk.waterModel)) {
+    if (chunk.waterModel.meshCount > 0) {
         UnloadModel(chunk.waterModel);
         chunk.waterModel = {0};
     }
 
     const ChunkMeshTriple& meshData = *chunk.pendingMeshData;
 
+    // Upload opaque
     if (!meshData.opaque.vertices.empty()) {
         chunk.opaqueModel = createModelFromBuffers(meshData.opaque, chunk.chunkCoords);
     }
 
+    // Upload translucent
     if (!meshData.translucent.vertices.empty()) {
         chunk.translucentModel = createModelFromBuffers(meshData.translucent, chunk.chunkCoords);
     }
 
+    // Upload water
     if (!meshData.water.vertices.empty()) {
         chunk.waterModel = createModelFromBuffers(meshData.water, chunk.chunkCoords);
     }
 
+    // Set flags using .store() for atomics
     chunk.pendingMeshData.reset();
-    chunk.meshReady = false;
-    chunk.loaded = true;
-}
+    chunk.meshReady.store(false);
+    chunk.meshBuilding.store(false);
+    chunk.loaded.store(true);
 
+    printf("DEBUG uploadMeshToGPU: Done for (%d, %d), loaded=%d\n", chunk.chunkCoords.x,
+           chunk.chunkCoords.z, chunk.loaded.load());
+}
 Model Renderer::createModelFromBuffers(const ChunkMeshBuffers& buf, const ChunkCoord& coord) {
     Mesh mesh = {0};
 
@@ -978,60 +1018,68 @@ void Renderer::initChunkWorkers(int threadCount) {
 }
 
 void Renderer::processChunkBuildQueue(const Camera3D& camera) {
-    constexpr int MAX_CHUNKS_PER_FRAME = 2;
+    constexpr int MAX_CHUNKS_PER_FRAME = 4;
     int processed = 0;
 
     ChunkCoord playerChunk = getPlayerChunkCoord(camera);
 
-    std::vector<std::unique_ptr<Chunk>> pendingChunks;
-    {
+    static int frameCount = 0;
+    frameCount++;
+
+    int queueSize = 0;
+
+    while (processed < MAX_CHUNKS_PER_FRAME) {
         std::unique_ptr<Chunk> chunk;
-        while (ChunkHelper::chunkBuildQueue.try_pop(chunk)) {
-            if (chunk) {
-                int dx = abs(chunk->chunkCoords.x - playerChunk.x);
-                int dz = abs(chunk->chunkCoords.z - playerChunk.z);
-
-                // Only keep chunks within range
-                if (dx <= Settings::preLoadDistance && dz <= Settings::preLoadDistance) {
-                    pendingChunks.push_back(std::move(chunk));
-                }
-            }
-        }
-    }
-
-    std::sort(pendingChunks.begin(), pendingChunks.end(),
-              [&playerChunk](const std::unique_ptr<Chunk>& a, const std::unique_ptr<Chunk>& b) {
-                  int distA =
-                      abs(a->chunkCoords.x - playerChunk.x) + abs(a->chunkCoords.z - playerChunk.z);
-                  int distB =
-                      abs(b->chunkCoords.x - playerChunk.x) + abs(b->chunkCoords.z - playerChunk.z);
-                  return distA < distB;
-              });
-
-    for (auto& chunk : pendingChunks) {
-        if (processed >= MAX_CHUNKS_PER_FRAME) {
-            ChunkHelper::chunkBuildQueue.push(std::move(chunk));
+        if (!ChunkHelper::chunkBuildQueue.try_pop(chunk)) break;
+        queueSize++;
+        if (!chunk) {
+            printf("DEBUG: Null chunk popped from queue\n");
             continue;
         }
 
         ChunkCoord coord = chunk->chunkCoords;
+        printf("DEBUG [%d]: Processing chunk (%d, %d)\n", frameCount, coord.x, coord.z);
 
+        // Remove from request set
+        {
+            std::lock_guard<std::mutex> lock(ChunkHelper::chunkRequestSetMutex);
+            ChunkHelper::chunkRequestSet.erase(coord);
+        }
+
+        // Distance check
+        int dx = abs(coord.x - playerChunk.x);
+        int dz = abs(coord.z - playerChunk.z);
+        if (dx > Settings::preLoadDistance + 2 || dz > Settings::preLoadDistance + 2) {
+            printf("DEBUG: Chunk (%d, %d) too far, skipping\n", coord.x, coord.z);
+            continue;
+        }
+
+        // Calculate lighting
+        LightingSystem::calculateSkyLight(*chunk);
+        LightingSystem::calculateBlockLight(*chunk);
+
+        // Spread light from neighbors
         {
             std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
             auto& activeChunks = ChunkHelper::activeChunks;
-            if (activeChunks.count({coord.x - 1, coord.z})) {
+
+            if (activeChunks.count({coord.x - 1, coord.z}) &&
+                activeChunks[{coord.x - 1, coord.z}]) {
                 LightingSystem::spreadLightFromNeighbor(*chunk,
                                                         *activeChunks[{coord.x - 1, coord.z}], 0);
             }
-            if (activeChunks.count({coord.x + 1, coord.z})) {
+            if (activeChunks.count({coord.x + 1, coord.z}) &&
+                activeChunks[{coord.x + 1, coord.z}]) {
                 LightingSystem::spreadLightFromNeighbor(*chunk,
                                                         *activeChunks[{coord.x + 1, coord.z}], 1);
             }
-            if (activeChunks.count({coord.x, coord.z - 1})) {
+            if (activeChunks.count({coord.x, coord.z - 1}) &&
+                activeChunks[{coord.x, coord.z - 1}]) {
                 LightingSystem::spreadLightFromNeighbor(*chunk,
                                                         *activeChunks[{coord.x, coord.z - 1}], 2);
             }
-            if (activeChunks.count({coord.x, coord.z + 1})) {
+            if (activeChunks.count({coord.x, coord.z + 1}) &&
+                activeChunks[{coord.x, coord.z + 1}]) {
                 LightingSystem::spreadLightFromNeighbor(*chunk,
                                                         *activeChunks[{coord.x, coord.z + 1}], 3);
             }
@@ -1042,17 +1090,28 @@ void Renderer::processChunkBuildQueue(const Camera3D& camera) {
         chunk->meshReady = false;
         chunk->meshBuilding = false;
 
+        printf("DEBUG: Adding chunk (%d, %d) to activeChunks\n", coord.x, coord.z);
         replaceChunk(coord, std::move(chunk));
 
+        // Submit mesh building
+        printf("DEBUG: Submitting mesh build for (%d, %d)\n", coord.x, coord.z);
         g_meshThreadPool->submit([coord]() {
+            printf("DEBUG: Mesh thread starting (%d, %d)\n", coord.x, coord.z);
             std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
             auto it = ChunkHelper::activeChunks.find(coord);
-            if (it != ChunkHelper::activeChunks.end() && it->second) {
-                Renderer::buildChunkMeshAsync(*it->second);
+            if (it == ChunkHelper::activeChunks.end()) {
+                printf("DEBUG: Chunk (%d, %d) not found in activeChunks!\n", coord.x, coord.z);
+                return;
             }
+            if (!it->second) {
+                printf("DEBUG: Chunk (%d, %d) is null in activeChunks!\n", coord.x, coord.z);
+                return;
+            }
+            Renderer::buildChunkMeshAsync(*it->second);
+            printf("DEBUG: Mesh thread finished (%d, %d)\n", coord.x, coord.z);
         });
 
-        ChunkHelper::markChunkDirty(coord);
+        // Mark neighbors dirty
         ChunkHelper::markChunkDirty({coord.x - 1, coord.z});
         ChunkHelper::markChunkDirty({coord.x + 1, coord.z});
         ChunkHelper::markChunkDirty({coord.x, coord.z - 1});
@@ -1060,23 +1119,83 @@ void Renderer::processChunkBuildQueue(const Camera3D& camera) {
 
         processed++;
     }
+
+    if (frameCount % 60 == 0) {
+        printf("DEBUG [%d]: Processed %d chunks this frame\n", frameCount, processed);
+    }
+}
+
+void Renderer::buildChunkMeshAsync(Chunk& chunk) {
+    printf("DEBUG: buildChunkMeshAsync for (%d, %d), meshBuilding=%d\n", chunk.chunkCoords.x,
+           chunk.chunkCoords.z, chunk.meshBuilding.load());
+
+    if (chunk.meshBuilding.exchange(true)) {
+        printf("DEBUG: Chunk (%d, %d) already building, skipping\n", chunk.chunkCoords.x,
+               chunk.chunkCoords.z);
+        return;
+    }
+
+    printf("DEBUG: Caching neighbors for (%d, %d)\n", chunk.chunkCoords.x, chunk.chunkCoords.z);
+    NeighborEdgeData neighbors = cacheNeighborEdges(chunk.chunkCoords);
+
+    printf("DEBUG: Building mesh data for (%d, %d)\n", chunk.chunkCoords.x, chunk.chunkCoords.z);
+    auto meshData = std::make_unique<ChunkMeshTriple>();
+    *meshData = buildChunkMeshesInternal(chunk, neighbors);
+
+    printf("DEBUG: Mesh built for (%d, %d) - opaque verts: %zu\n", chunk.chunkCoords.x,
+           chunk.chunkCoords.z, meshData->opaque.vertices.size());
+
+    chunk.pendingMeshData = std::move(meshData);
+    chunk.meshBuilding = false;
+    chunk.meshReady = true;
+
+    printf("DEBUG: Mesh ready for (%d, %d)\n", chunk.chunkCoords.x, chunk.chunkCoords.z);
 }
 
 void Renderer::uploadPendingMeshes() {
     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
 
+    int total = 0;
+    int ready = 0;
     int uploaded = 0;
     constexpr int MAX_UPLOADS_PER_FRAME = 4;
 
     for (auto& [coord, chunk] : ChunkHelper::activeChunks) {
+        total++;
         if (!chunk) continue;
-        if (!chunk->meshReady.load()) continue;
-        if (uploaded >= MAX_UPLOADS_PER_FRAME) break;
 
-        uploadMeshToGPU(*chunk);
-        uploaded++;
+        if (chunk->meshReady.load()) {
+            ready++;
+            if (uploaded < MAX_UPLOADS_PER_FRAME) {
+                printf("DEBUG: Uploading mesh for (%d, %d)\n", coord.x, coord.z);
+                uploadMeshToGPU(*chunk);
+                uploaded++;
+            }
+        }
+    }
+
+    static int frameCount = 0;
+    if (frameCount++ % 60 == 0) {
+        printf("DEBUG: uploadPendingMeshes - total=%d, ready=%d, uploaded=%d\n", total, ready,
+               uploaded);
     }
 }
+
+// void Renderer::uploadPendingMeshes() {
+//     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+//
+//     int uploaded = 0;
+//     constexpr int MAX_UPLOADS_PER_FRAME = 4;
+//
+//     for (auto& [coord, chunk] : ChunkHelper::activeChunks) {
+//         if (!chunk) continue;
+//         if (!chunk->meshReady.load()) continue;
+//         if (uploaded >= MAX_UPLOADS_PER_FRAME) break;
+//
+//         uploadMeshToGPU(*chunk);
+//         uploaded++;
+//     }
+// }
 
 void Renderer::rebuildDirtyChunks() {
     std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);

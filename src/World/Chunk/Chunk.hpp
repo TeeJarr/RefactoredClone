@@ -352,22 +352,41 @@ struct ThreadSafeQueue {
     void notifyAll() { cv.notify_all(); }
 };
 
+struct ClimateData {
+    float temperature;
+    float humidity;
+    float continental;
+    float erosion;
+    float peaks;
+    float weirdness;  // For unusual terrain features
+};
+
 namespace ChunkHelper {
-    inline FastNoiseLite ridgeNoise; // long mountain chains
-    inline FastNoiseLite riverNoise; // river paths
-    inline FastNoiseLite warpNoise;
+    // ChunkHelper.hpp
+    // In ChunkHelper.hpp
+
+    inline FastNoiseLite regionNoise;        // Large scale regions
+    inline FastNoiseLite subRegionNoise;     // Medium scale variation
+    inline FastNoiseLite localNoise;         // Small scale detail
+    inline FastNoiseLite weirdnessNoise;     // Unusual terrain features
     inline FastNoiseLite terrainNoise;
-    inline FastNoiseLite biomeNoise;
-    inline FastNoiseLite temperatureNoise;
-    inline FastNoiseLite treeNoise;
-    inline FastNoiseLite caveNoise;
-    inline FastNoiseLite humidityNoise;
     inline FastNoiseLite continentalnessNoise;
-    inline FastNoiseLite detailNoise;
-    inline FastNoiseLite peakNoise;
     inline FastNoiseLite erosionNoise;
+    inline FastNoiseLite peakNoise;
+    inline FastNoiseLite detailNoise;
+    inline FastNoiseLite temperatureNoise;
+    inline FastNoiseLite humidityNoise;
+    inline FastNoiseLite caveNoise;
+    inline FastNoiseLite caveNoise2;        // NEW: spaghetti caves
+    inline FastNoiseLite cheeseCaveNoise;   // NEW: cheese caves
+    inline FastNoiseLite overhangNoise;     // NEW: overhangs
+    inline FastNoiseLite treeNoise;
+    inline FastNoiseLite biomeNoise;
 
     static BlockIds getWorldBlock(int worldX, int worldY, int worldZ);
+
+
+    ClimateData getClimateAt(int wx, int wz);
 
     // Smooth interpolation
     inline float smoothstep(float edge0, float edge1, float x) {

@@ -8,17 +8,12 @@
 #pragma once
 #include <raylib.h>
 
-enum GameStates {
-    MENU,
-    IN_GAME,
-    PAUSED,
-    QUIT
-};
+enum GameStates { MENU, IN_GAME, PAUSED, QUIT };
 
 namespace Settings {
     inline int screenWidth = 1280;
     inline int screenHeight = 720;
-    inline int frameRate = 12;
+    inline int frameRate = 120;
     inline int preLoadDistance = 8;
 
     inline int renderDistance = 12;
@@ -28,9 +23,7 @@ namespace Settings {
     inline GameStates gameStateFlag = MENU;
     inline GameStates previousGameState = MENU;
 
-    inline float getSysTimeAsFloat() {
-        return (float)GetTime();
-    }
-}
+    inline float getSysTimeAsFloat() { return (float)GetTime(); }
+} // namespace Settings
 
-#endif //REFACTOREDCLONE_SETTINGS_HPP
+#endif // REFACTOREDCLONE_SETTINGS_HPP

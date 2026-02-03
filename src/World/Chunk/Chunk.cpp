@@ -16,34 +16,34 @@
 constexpr int WATER_LEVEL = 62;
 constexpr int BEACH_LEVEL = 63;
 
-void ChunkHelper::generateChunkTerrain(const std::unique_ptr<Chunk>& chunk) {
-    int chunkOffsetX = chunk->chunkCoords.x * CHUNK_SIZE_X;
-    int chunkOffsetZ = chunk->chunkCoords.z * CHUNK_SIZE_Z;
-
-    for (int x = 0; x < CHUNK_SIZE_X; x++) {
-        for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-            int wx = chunkOffsetX + x;
-            int wz = chunkOffsetZ + z;
-            chunk->biomeMap[x][z] = ChunkHelper::getBiomeAt(wx, wz);
-
-            float surfaceY = (getSurfaceHeight(wx, wz));
-            chunk->surfaceHeight[x][z] = surfaceY;
-            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
-                if (y == 0) {
-                    chunk->blockPosition[x][y][z] = ID_BEDROCK;
-                } else if (y <= surfaceY) {
-                    chunk->blockPosition[x][y][z] = ID_STONE;
-                } else {
-                    chunk->blockPosition[x][y][z] = ID_AIR;
-                }
-            }
-
-            if (surfaceY < WATER_LEVEL) {
-                chunk->blockPosition[x][(int)surfaceY][z] = ID_WATER;
-            }
-        }
-    }
-}
+// void ChunkHelper::generateChunkTerrain(const std::unique_ptr<Chunk>& chunk) {
+//     int chunkOffsetX = chunk->chunkCoords.x * CHUNK_SIZE_X;
+//     int chunkOffsetZ = chunk->chunkCoords.z * CHUNK_SIZE_Z;
+//
+//     for (int x = 0; x < CHUNK_SIZE_X; x++) {
+//         for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+//             int wx = chunkOffsetX + x;
+//             int wz = chunkOffsetZ + z;
+//             chunk->biomeMap[x][z] = ChunkHelper::getBiomeAt(wx, wz);
+//
+//             float surfaceY = (getSurfaceHeight(wx, wz));
+//             chunk->surfaceHeight[x][z] = surfaceY;
+//             for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+//                 if (y == 0) {
+//                     chunk->blockPosition[x][y][z] = ID_BEDROCK;
+//                 } else if (y <= surfaceY) {
+//                     chunk->blockPosition[x][y][z] = ID_STONE;
+//                 } else {
+//                     chunk->blockPosition[x][y][z] = ID_AIR;
+//                 }
+//             }
+//
+//             if (surfaceY < WATER_LEVEL) {
+//                 chunk->blockPosition[x][(int)surfaceY][z] = ID_WATER;
+//             }
+//         }
+//     }
+// }
 
 bool ChunkHelper::isSolidBlock(int x, int y, int z) {
     float scale = 0.05f;
@@ -207,8 +207,8 @@ std::unique_ptr<Chunk> ChunkHelper::generateChunkAsync(const Vector3& chunkPosIn
     chunk->chunkCoords.z = chunkZ;
 
     generateChunkTerrain(chunk); // terrain + caves
-    setBiomeFloor(chunk);        // grass/dirt/sand
-    populateTrees(*chunk);       // trees
+    // setBiomeFloor(chunk);        // grass/dirt/sand
+    populateTrees(*chunk); // trees
 
     chunk->boundingBox.min = {(float)chunkX * CHUNK_SIZE_X, 0.0f, (float)chunkZ * CHUNK_SIZE_Z};
     chunk->boundingBox.max = {(float)chunkX * CHUNK_SIZE_X + CHUNK_SIZE_X, (float)CHUNK_SIZE_Y,
@@ -271,8 +271,8 @@ void ChunkHelper::setBiomeFloor(const std::unique_ptr<Chunk>& chunk) {
                 chunk->blockPosition[x][surfaceY][z] = biome.surfaceBlock;
             }
 
-            // Subsurface (3 blocks deep)
-            for (int y = surfaceY - 1; y >= surfaceY - 3 && y > 0; y--) {
+            int subSurface = GetRandomValue(4, 7);
+            for (int y = surfaceY - 1; y >= surfaceY - subSurface && y > 0; y--) {
                 if (chunk->blockPosition[x][y][z] == ID_STONE) {
                     chunk->blockPosition[x][y][z] = biome.subsurfaceBlock;
                 }
@@ -380,94 +380,135 @@ float ChunkHelper::getContinentalness(int wx, int wz) {
 
 void ChunkHelper::initNoiseRenderer() {
     // ---------------------------
+    // Region noise (VERY large scale - continents/major climate zones)
+    // ---------------------------
+    regionNoise.SetSeed(Settings::worldSeed);
+    regionNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    regionNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    regionNoise.SetFractalOctaves(2);
+    regionNoise.SetFrequency(0.00005f); // Huge regions
+
+    // ---------------------------
+    // Sub-region noise (large scale - biome clusters)
+    // ---------------------------
+    subRegionNoise.SetSeed(Settings::worldSeed + 100);
+    subRegionNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    subRegionNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    subRegionNoise.SetFractalOctaves(3);
+    subRegionNoise.SetFrequency(0.0002f); // Large regions
+
+    // ---------------------------
+    // Local noise (medium scale - individual biomes)
+    // ---------------------------
+    localNoise.SetSeed(Settings::worldSeed + 200);
+    localNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    localNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    localNoise.SetFractalOctaves(3);
+    localNoise.SetFrequency(0.001f); // Medium regions
+
+    // ---------------------------
+    // Weirdness (for unusual terrain)
+    // ---------------------------
+    weirdnessNoise.SetSeed(Settings::worldSeed + 300);
+    weirdnessNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    weirdnessNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    weirdnessNoise.SetFractalOctaves(2);
+    weirdnessNoise.SetFrequency(0.0004f);
+
+    // ---------------------------
+    // Temperature (multi-scale)
+    // ---------------------------
+    temperatureNoise.SetSeed(Settings::worldSeed + 1000);
+    temperatureNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    temperatureNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    temperatureNoise.SetFractalOctaves(2);
+    temperatureNoise.SetFrequency(0.00008f); // Very large temperature zones
+
+    // ---------------------------
+    // Humidity (multi-scale)
+    // ---------------------------
+    humidityNoise.SetSeed(Settings::worldSeed + 2000);
+    humidityNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    humidityNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    humidityNoise.SetFractalOctaves(2);
+    humidityNoise.SetFrequency(0.00008f); // Very large humidity zones
+
+    // ---------------------------
+    // Continentalness (multi-scale)
+    // ---------------------------
+    continentalnessNoise.SetSeed(Settings::worldSeed + 3000);
+    continentalnessNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    continentalnessNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    continentalnessNoise.SetFractalOctaves(3);
+    continentalnessNoise.SetFrequency(0.0001f); // Large continents
+
+    // ---------------------------
+    // Erosion
+    // ---------------------------
+    erosionNoise.SetSeed(Settings::worldSeed + 4000);
+    erosionNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    erosionNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    erosionNoise.SetFractalOctaves(3);
+    erosionNoise.SetFrequency(0.0006f);
+
+    // ---------------------------
+    // Peaks/Valleys
+    // ---------------------------
+    peakNoise.SetSeed(Settings::worldSeed + 5000);
+    peakNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    peakNoise.SetFractalType(FastNoiseLite::FractalType_Ridged);
+    peakNoise.SetFractalOctaves(4);
+    peakNoise.SetFrequency(0.0008f);
+
+    // ---------------------------
     // Base terrain
     // ---------------------------
-    terrainNoise.SetSeed(Settings::worldSeed);
+    terrainNoise.SetSeed(Settings::worldSeed + 6000);
     terrainNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
     terrainNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
     terrainNoise.SetFractalOctaves(5);
     terrainNoise.SetFractalLacunarity(2.0f);
     terrainNoise.SetFractalGain(0.5f);
-    terrainNoise.SetFrequency(0.005f);
-
-    // ---------------------------
-    // Continentalness (large scale land/ocean)
-    // ---------------------------
-    continentalnessNoise.SetSeed(Settings::worldSeed + 1000);
-    continentalnessNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
-    continentalnessNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
-    continentalnessNoise.SetFractalOctaves(3);
-    continentalnessNoise.SetFrequency(0.0005f); // Very low = large continents
-
-    // ---------------------------
-    // Erosion
-    // ---------------------------
-    erosionNoise.SetSeed(Settings::worldSeed + 2000);
-    erosionNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
-    erosionNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
-    erosionNoise.SetFractalOctaves(4);
-    erosionNoise.SetFractalGain(0.4f);
-    erosionNoise.SetFrequency(0.003f);
-
-    // ---------------------------
-    // Peaks (hills/mountains regions)
-    // ---------------------------
-    peakNoise.SetSeed(Settings::worldSeed + 3000);
-    peakNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
-    peakNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
-    peakNoise.SetFractalOctaves(4);
-    peakNoise.SetFrequency(0.001f); // Low = large mountain ranges
+    terrainNoise.SetFrequency(0.003f);
 
     // ---------------------------
     // Detail
     // ---------------------------
-    detailNoise.SetSeed(Settings::worldSeed + 4000);
+    detailNoise.SetSeed(Settings::worldSeed + 7000);
     detailNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
     detailNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
     detailNoise.SetFractalOctaves(3);
-    detailNoise.SetFrequency(0.02f);
-
-    // ---------------------------
-    // Temperature (LARGE biomes)
-    // ---------------------------
-    temperatureNoise.SetSeed(Settings::worldSeed + 5000);
-    temperatureNoise.SetNoiseType(FastNoiseLite::NoiseType_Cellular);
-    temperatureNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
-    temperatureNoise.SetFractalOctaves(3);
-    temperatureNoise.SetFrequency(0.0009f); // Very low = large temperature zones
-
-    // ---------------------------
-    // Humidity (LARGE biomes)
-    // ---------------------------
-    humidityNoise.SetSeed(Settings::worldSeed + 6000);
-    humidityNoise.SetNoiseType(FastNoiseLite::NoiseType_Cellular);
-    humidityNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
-    humidityNoise.SetFractalOctaves(3);
-    humidityNoise.SetFrequency(0.0009f); // Very low = large humidity zones
-
-    // ---------------------------
-    // Biome
-    // ---------------------------
-    biomeNoise.SetSeed(Settings::worldSeed + 7000);
-    biomeNoise.SetNoiseType(FastNoiseLite::NoiseType_Cellular);
-    biomeNoise.SetCellularDistanceFunction(FastNoiseLite::CellularDistanceFunction_Hybrid);
-    biomeNoise.SetCellularReturnType(FastNoiseLite::CellularReturnType_CellValue);
-    biomeNoise.SetFrequency(0.008f); // Lower = larger biome cells
+    detailNoise.SetFrequency(0.015f);
 
     // ---------------------------
     // Caves
     // ---------------------------
     caveNoise.SetSeed(Settings::worldSeed + 8000);
-    caveNoise.SetNoiseType(FastNoiseLite::NoiseType_Perlin);
+    caveNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
     caveNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
     caveNoise.SetFractalOctaves(2);
-    caveNoise.SetFrequency(0.05f);
+    caveNoise.SetFrequency(0.015f);
 
-    // ---------------------------
-    // Trees
-    // ---------------------------
-    treeNoise.SetSeed(Settings::worldSeed + 9000);
-    treeNoise.SetNoiseType(FastNoiseLite::NoiseType_Perlin);
+    caveNoise2.SetSeed(Settings::worldSeed + 9000);
+    caveNoise2.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    caveNoise2.SetFractalType(FastNoiseLite::FractalType_FBm);
+    caveNoise2.SetFractalOctaves(2);
+    caveNoise2.SetFrequency(0.02f);
+
+    cheeseCaveNoise.SetSeed(Settings::worldSeed + 10000);
+    cheeseCaveNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    cheeseCaveNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    cheeseCaveNoise.SetFractalOctaves(2);
+    cheeseCaveNoise.SetFrequency(0.01f);
+
+    overhangNoise.SetSeed(Settings::worldSeed + 11000);
+    overhangNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+    overhangNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+    overhangNoise.SetFractalOctaves(3);
+    overhangNoise.SetFrequency(0.02f);
+
+    treeNoise.SetSeed(Settings::worldSeed + 12000);
+    treeNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
     treeNoise.SetFrequency(0.5f);
 }
 
@@ -478,172 +519,416 @@ float ChunkHelper::getSurfaceHeight(int wx, int wz) {
     const float SEA_LEVEL = 62.0f;
     const float BASE_HEIGHT = 64.0f;
 
-    float continental = continentalnessNoise.GetNoise(x, z);
-    float terrain = terrainNoise.GetNoise(x, z);
-    float erosion = erosionNoise.GetNoise(x, z);
-    float peaks = peakNoise.GetNoise(x, z);
-    float detail = detailNoise.GetNoise(x, z);
-
-    float localVar = terrainNoise.GetNoise(x * 2.0f, z * 2.0f);
-    float microVar = detailNoise.GetNoise(x * 1.5f, z * 1.5f);
-
+    ClimateData climate = getClimateAt(wx, wz);
     BiomeType biome = getBiomeAt(wx, wz);
+
+    // Multi-scale terrain
+    float terrain = terrainNoise.GetNoise(x, z);
+    float terrain2 = terrainNoise.GetNoise(x * 2.0f, z * 2.0f) * 0.4f;
+    float terrain3 = terrainNoise.GetNoise(x * 4.0f, z * 4.0f) * 0.2f;
+    float detail = detailNoise.GetNoise(x, z);
 
     float height;
 
-    const float OCEAN_THRESHOLD = -0.3f;
+    const float OCEAN_THRESHOLD = -0.35f;
     const float BEACH_WIDTH = 0.03f;
 
-    // Deep Ocean
-    if (continental < OCEAN_THRESHOLD - 0.2f) {
-        height = SEA_LEVEL - 20.0f;
-        height += terrain * 5.0f;
-        return std::max(height, 5.0f);
-    }
-
-    // Shallow Ocean
-    if (continental < OCEAN_THRESHOLD - BEACH_WIDTH) {
-        float depth = (OCEAN_THRESHOLD - BEACH_WIDTH - continental) / 0.2f;
-        height = SEA_LEVEL - 3.0f - depth * 15.0f;
+    // === OCEAN ===
+    if (climate.continental < OCEAN_THRESHOLD - 0.15f) {
+        // Deep ocean
+        float oceanDepth = (OCEAN_THRESHOLD - 0.15f - climate.continental) / 0.5f;
+        oceanDepth = std::clamp(oceanDepth, 0.0f, 1.0f);
+        height = SEA_LEVEL - 8.0f - oceanDepth * 12.0f;
         height += terrain * 3.0f;
-        return std::max(height, 5.0f);
+        return std::max(height, 40.0f);
     }
 
-    // Beach
-    if (continental < OCEAN_THRESHOLD + BEACH_WIDTH) {
-        float t = (continental - (OCEAN_THRESHOLD - BEACH_WIDTH)) / (BEACH_WIDTH * 2.0f);
-        height = SEA_LEVEL - 2.0f + t * 5.0f;
+    if (climate.continental < OCEAN_THRESHOLD - BEACH_WIDTH) {
+        // Shallow ocean
+        float shallowFactor =
+            (climate.continental - (OCEAN_THRESHOLD - 0.15f)) / (0.15f - BEACH_WIDTH);
+        shallowFactor = std::clamp(shallowFactor, 0.0f, 1.0f);
+        height = SEA_LEVEL - 8.0f + shallowFactor * 6.0f;
+        height += terrain * 2.0f;
+        return std::max(height, 50.0f);
+    }
+
+    // === BEACH ===
+    if (climate.continental < OCEAN_THRESHOLD + BEACH_WIDTH) {
+        float beachFactor =
+            (climate.continental - (OCEAN_THRESHOLD - BEACH_WIDTH)) / (BEACH_WIDTH * 2.0f);
+        beachFactor = std::clamp(beachFactor, 0.0f, 1.0f);
+        height = SEA_LEVEL - 1.0f + beachFactor * 4.0f;
+        height += detail * 0.5f;
         return height;
     }
 
-    // --- Land ---
+    // === LAND ===
     height = BASE_HEIGHT;
 
-    float flatness = (erosion + 1.0f) * 0.5f;
-    flatness = 0.3f + flatness * 0.7f;
+    // Coastal factor for smooth transitions
+    float distanceFromCoast = climate.continental - OCEAN_THRESHOLD;
+    float coastalFactor = std::clamp(distanceFromCoast / 0.25f, 0.0f, 1.0f);
+    coastalFactor = coastalFactor * coastalFactor;
 
-    // Base terrain for all land biomes
-    height += terrain * 8.0f * flatness;
-    height += localVar * 5.0f * flatness;
-    height += microVar * 2.0f;
+    // Erosion controls flatness
+    float flatness = (climate.erosion + 1.0f) * 0.5f;
+    flatness = 0.4f + flatness * 0.6f;
+
+    // Base terrain (reduced near coast)
+    height += terrain * 5.0f * flatness * (0.6f + 0.4f * coastalFactor);
+    height += terrain2 * 3.0f * flatness * coastalFactor;
+    height += terrain3 * 1.5f * coastalFactor;
     height += detail * 1.5f;
 
-    // Gradual mountain/hill influence based on peaks value
-    // This creates smooth transitions instead of hard boundaries
-    if (peaks > -0.2f) {
-        // Gradually increase height as peaks increases
-        // -0.2 to 0.0 = slight hills
-        // 0.0 to 0.2 = medium hills
-        // 0.2 to 0.4 = large hills
-        // 0.4+ = mountains
-
-        float hillFactor = (peaks + 0.2f) / 0.4f;  // 0 to 1 for hills
+    // Small hills
+    if (climate.peaks > -0.2f) {
+        float hillFactor = (climate.peaks + 0.2f) / 0.4f;
         hillFactor = std::clamp(hillFactor, 0.0f, 1.0f);
-        hillFactor = hillFactor * hillFactor;  // Smooth curve
-
-        height += hillFactor * 15.0f;
-
-        // Additional mountain height
-        if (peaks > 0.1f) {
-            float mountainFactor = (peaks - 0.1f) / 0.3f;  // 0 to 1
-            mountainFactor = std::clamp(mountainFactor, 0.0f, 1.0f);
-            mountainFactor = mountainFactor * mountainFactor;  // Smooth curve
-
-            height += mountainFactor * 25.0f;
-        }
-
-        // Extreme peaks
-        if (peaks > 0.3f) {
-            float extremeFactor = (peaks - 0.3f) / 0.4f;
-            extremeFactor = std::clamp(extremeFactor, 0.0f, 1.0f);
-            extremeFactor = extremeFactor * extremeFactor;
-
-            height += extremeFactor * 35.0f;
-        }
+        hillFactor = hillFactor * hillFactor;
+        height += hillFactor * 6.0f * coastalFactor;
     }
 
-    // Biome-specific adjustments (on top of gradual terrain)
+    // Medium hills (inland only)
+    if (climate.peaks > 0.15f && coastalFactor > 0.5f) {
+        float mediumFactor = (climate.peaks - 0.15f) / 0.25f;
+        mediumFactor = std::clamp(mediumFactor, 0.0f, 1.0f);
+        mediumFactor = mediumFactor * mediumFactor;
+        height += mediumFactor * 10.0f * coastalFactor;
+    }
+
+    // Mountains (rare, far inland)
+    if (climate.peaks > 0.4f && coastalFactor > 0.8f) {
+        float mountainFactor = (climate.peaks - 0.4f) / 0.4f;
+        mountainFactor = std::clamp(mountainFactor, 0.0f, 1.0f);
+        mountainFactor = mountainFactor * mountainFactor;
+        height += mountainFactor * 18.0f;
+    }
+
+    // Biome-specific adjustments
     switch (biome) {
         case BIOME_DESERT:
-            // Deserts are slightly elevated and always above water
-            height += 2.0f;
-            height = std::max(height, SEA_LEVEL + 3.0f);
+            height = std::max(height, SEA_LEVEL + 2.0f);
             break;
-
         case BIOME_SWAMP:
-            // Swamps are flattened toward sea level
             height = SEA_LEVEL + 1.0f + (height - BASE_HEIGHT) * 0.2f;
             break;
-
-        case BIOME_TAIGA:
-            // Slightly elevated cold terrain
-            height += 2.0f;
+        case BIOME_MOUNTAINS:
+            if (coastalFactor > 0.7f) {
+                height += 4.0f;
+            }
             break;
-
         default:
             break;
     }
+
+    height = std::min(height, 95.0f);
 
     return std::clamp(height, 1.0f, (float)(CHUNK_SIZE_Y - 5));
 }
 
 BiomeType ChunkHelper::getBiomeAt(int wx, int wz) {
-    float x = (float)wx;
-    float z = (float)wz;
+    ClimateData climate = getClimateAt(wx, wz);
 
-    float continental = continentalnessNoise.GetNoise(x, z);
-    float temperature = temperatureNoise.GetNoise(x, z);
-    float humidity = humidityNoise.GetNoise(x, z);
-    float peaks = peakNoise.GetNoise(x, z);
-
-    const float OCEAN_THRESHOLD = -0.3f;
+    const float OCEAN_THRESHOLD = -0.35f;
     const float BEACH_WIDTH = 0.03f;
 
-    // Ocean
-    if (continental < OCEAN_THRESHOLD - BEACH_WIDTH) {
+    float distanceFromCoast = climate.continental - OCEAN_THRESHOLD;
+    float coastalFactor = std::clamp(distanceFromCoast / 0.25f, 0.0f, 1.0f);
+    coastalFactor = coastalFactor * coastalFactor;
+
+    // === OCEAN ===
+    if (climate.continental < OCEAN_THRESHOLD - BEACH_WIDTH) {
+        // Deep ocean vs shallow based on continental value
         return BIOME_OCEAN;
     }
 
-    // Beach
-    if (continental < OCEAN_THRESHOLD + BEACH_WIDTH) {
-        if (temperature > 0.15f && humidity < -0.1f) {
+    // === BEACH ===
+    if (climate.continental < OCEAN_THRESHOLD + BEACH_WIDTH) {
+        // Hot beaches can be desert coastline
+        if (climate.temperature > 0.3f && climate.humidity < -0.2f) {
             return BIOME_DESERT;
         }
         return BIOME_BEACH;
     }
 
-    // Mountains
-    if (peaks > 0.35f) {
+    // === MOUNTAINS (rare, only far inland with high peaks) ===
+    if (climate.peaks > 0.90f && coastalFactor > 0.7f && climate.erosion > -0.3f) {
         return BIOME_MOUNTAINS;
     }
 
-    // Hills
-    if (peaks > 0.15f) {
-        // if (temperature < -0.8f) {
-        //     return BIOME_TAIGA;
-        // }
+    // === HILLS (uncommon, inland) ===
+    if (climate.peaks > 0.75f && coastalFactor > 0.4f) {
+        if (climate.temperature < -0.4f) {
+            return BIOME_TAIGA;
+        }
         return BIOME_HILLS;
     }
 
-    // Desert
-    if (temperature > 0.15f && humidity < -0.1f) {
+    // === CLIMATE-BASED BIOMES ===
+
+    // Hot & Dry = Desert
+    if (climate.temperature > 0.3f && climate.humidity < -0.15f) {
         return BIOME_DESERT;
     }
 
-    // Swamp
-    if (temperature > -0.1f && humidity > 0.25f && peaks < 0.0f) {
+    // Hot & Wet & Flat = Swamp
+    if (climate.temperature > 0.0f && climate.humidity > 0.3f && climate.peaks < -0.1f) {
         return BIOME_SWAMP;
     }
 
-    // // Taiga - only in VERY cold areas
-    if (temperature < -0.8f) {
+    // Cold = Taiga
+    if (climate.temperature < -0.4f && coastalFactor > 0.3f) {
         return BIOME_TAIGA;
     }
 
-    // Forest
-    if (humidity > 0.05f) {
+    // Humid = Forest
+    if (climate.humidity > 0.05f) {
         return BIOME_FOREST;
     }
 
+    // Default = Plains
     return BIOME_PLAINS;
+}
+
+void ChunkHelper::generateChunkTerrain(const std::unique_ptr<Chunk>& chunk) {
+    int chunkOffsetX = chunk->chunkCoords.x * CHUNK_SIZE_X;
+    int chunkOffsetZ = chunk->chunkCoords.z * CHUNK_SIZE_Z;
+
+    const int SEA_LEVEL = 62;
+    const int STONE_DEPTH = 4;
+
+    // First pass: generate base terrain
+    for (int x = 0; x < CHUNK_SIZE_X; x++) {
+        for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+            int wx = chunkOffsetX + x;
+            int wz = chunkOffsetZ + z;
+
+            BiomeType biome = ChunkHelper::getBiomeAt(wx, wz);
+            chunk->biomeMap[x][z] = biome;
+
+            int surfaceY = (int)getSurfaceHeight(wx, wz);
+            chunk->surfaceHeight[x][z] = surfaceY;
+
+            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+                BlockIds block = ID_AIR;
+
+                if (y == 0) {
+                    block = ID_BEDROCK;
+                } else if (y < 5) {
+                    if (GetRandomValue(0, y) == 0) {
+                        block = ID_BEDROCK;
+                    } else {
+                        block = ID_STONE;
+                    }
+                } else if (y < surfaceY - STONE_DEPTH) {
+                    block = ID_STONE;
+                } else if (y < surfaceY) {
+                    switch (biome) {
+                        case BIOME_DESERT:
+                        case BIOME_BEACH:
+                            block = ID_SAND;
+                            break;
+                        case BIOME_MOUNTAINS:
+                            if (surfaceY > 90) {
+                                block = ID_STONE;
+                            } else {
+                                block = ID_DIRT;
+                            }
+                            break;
+                        default:
+                            block = ID_DIRT;
+                            break;
+                    }
+                } else if (y == surfaceY) {
+                    switch (biome) {
+                        case BIOME_DESERT:
+                        case BIOME_BEACH:
+                        case BIOME_OCEAN:
+                            block = ID_SAND;
+                            break;
+                        case BIOME_MOUNTAINS:
+                            if (surfaceY > 90) {
+                                block = ID_STONE;
+                            } else if (surfaceY > 80) {
+                                block = (GetRandomValue(0, 100) < 40) ? ID_GRASS : ID_GRASS;
+                            } else {
+                                block = ID_GRASS;
+                            }
+                            break;
+                        default:
+                            block = ID_GRASS;
+                            break;
+                    }
+                } else if (y <= SEA_LEVEL && y > surfaceY) {
+                    if (biome == BIOME_DESERT) {
+                        block = ID_AIR;
+                    } else {
+                        block = ID_WATER;
+                    }
+                }
+
+                chunk->blockPosition[x][y][z] = block;
+            }
+        }
+    }
+
+    // Second pass: caves and overhangs (LESS COMMON)
+    for (int x = 0; x < CHUNK_SIZE_X; x++) {
+        for (int z = 0; z < CHUNK_SIZE_Z; z++) {
+            int wx = chunkOffsetX + x;
+            int wz = chunkOffsetZ + z;
+            int surfaceY = chunk->surfaceHeight[x][z];
+
+            for (int y = 1; y < CHUNK_SIZE_Y - 1; y++) {
+                float wy = (float)y;
+
+                if (chunk->blockPosition[x][y][z] == ID_AIR ||
+                    chunk->blockPosition[x][y][z] == ID_WATER) {
+                    continue;
+                }
+
+                // --- OVERHANGS (rarer) ---
+                if (y > 50 && y < surfaceY + 15) {
+                    float overhang = overhangNoise.GetNoise((float)wx, wy, (float)wz);
+
+                    float heightFactor = 1.0f - std::abs(y - 70.0f) / 40.0f;
+                    heightFactor = std::max(0.0f, heightFactor);
+
+                    float steepness = std::abs(peakNoise.GetNoise((float)wx, (float)wz));
+
+                    // Higher threshold = rarer overhangs
+                    float overhangThreshold = 0.55f - heightFactor * 0.1f - steepness * 0.05f;
+
+                    if (overhang > overhangThreshold && y > surfaceY - 8) {
+                        chunk->blockPosition[x][y][z] = ID_AIR;
+                    }
+                }
+
+                // --- SPAGHETTI CAVES (much rarer) ---
+                if (y > 8 && y < surfaceY - 8) {
+                    float cave1 = caveNoise.GetNoise((float)wx, wy, (float)wz);
+                    float cave2 = caveNoise2.GetNoise((float)wx, wy, (float)wz);
+
+                    float spaghettiValue = std::abs(cave1) + std::abs(cave2);
+
+                    float depthFactor = 1.0f - (float)y / (float)surfaceY;
+                    depthFactor = std::clamp(depthFactor, 0.0f, 1.0f);
+
+                    // Much lower threshold = much rarer caves
+                    float caveThreshold = 0.08f + depthFactor * 0.04f;
+
+                    if (spaghettiValue < caveThreshold) {
+                        chunk->blockPosition[x][y][z] = ID_AIR;
+                    }
+                }
+
+                // --- CHEESE CAVES (rarer and smaller) ---
+                if (y > 15 && y < 45) {
+                    float cheese = cheeseCaveNoise.GetNoise((float)wx, wy, (float)wz);
+
+                    // Higher threshold = rarer cheese caves
+                    float cheeseThreshold = 0.75f;
+
+                    if (cheese > cheeseThreshold) {
+                        chunk->blockPosition[x][y][z] = ID_AIR;
+                    }
+                }
+            }
+        }
+    }
+
+    // Third pass: cleanup
+    for (int x = 1; x < CHUNK_SIZE_X - 1; x++) {
+        for (int z = 1; z < CHUNK_SIZE_Z - 1; z++) {
+            for (int y = 2; y < CHUNK_SIZE_Y - 1; y++) {
+                if (chunk->blockPosition[x][y][z] == ID_DIRT ||
+                    chunk->blockPosition[x][y][z] == ID_GRASS) {
+
+                    bool exposedToAir = false;
+                    if (y > 0 && chunk->blockPosition[x][y - 1][z] == ID_AIR) exposedToAir = true;
+                    if (chunk->blockPosition[x + 1][y][z] == ID_AIR) exposedToAir = true;
+                    if (chunk->blockPosition[x - 1][y][z] == ID_AIR) exposedToAir = true;
+                    if (chunk->blockPosition[x][y][z + 1] == ID_AIR) exposedToAir = true;
+                    if (chunk->blockPosition[x][y][z - 1] == ID_AIR) exposedToAir = true;
+
+                    int surfaceY = chunk->surfaceHeight[x][z];
+                    if (exposedToAir && y < surfaceY - 2) {
+                        chunk->blockPosition[x][y][z] = ID_STONE;
+                    }
+                }
+
+                // Remove floating blocks
+                if (chunk->blockPosition[x][y][z] != ID_AIR &&
+                    chunk->blockPosition[x][y][z] != ID_WATER &&
+                    chunk->blockPosition[x][y][z] != ID_BEDROCK) {
+
+                    int airCount = 0;
+                    if (chunk->blockPosition[x][y - 1][z] == ID_AIR) airCount++;
+                    if (chunk->blockPosition[x][y + 1][z] == ID_AIR) airCount++;
+                    if (chunk->blockPosition[x + 1][y][z] == ID_AIR) airCount++;
+                    if (chunk->blockPosition[x - 1][y][z] == ID_AIR) airCount++;
+                    if (chunk->blockPosition[x][y][z + 1] == ID_AIR) airCount++;
+                    if (chunk->blockPosition[x][y][z - 1] == ID_AIR) airCount++;
+
+                    if (airCount >= 5) {
+                        chunk->blockPosition[x][y][z] = ID_AIR;
+                    }
+                }
+            }
+        }
+    }
+}
+
+ClimateData ChunkHelper::getClimateAt(int wx, int wz) {
+    float x = (float)wx;
+    float z = (float)wz;
+
+    ClimateData climate;
+
+    // === TEMPERATURE ===
+    // Large scale (climate zones)
+    float tempLarge = temperatureNoise.GetNoise(x, z);
+    // Medium scale (regional variation)
+    float tempMedium = temperatureNoise.GetNoise(x * 3.0f, z * 3.0f) * 0.3f;
+    // Small scale (local variation)
+    float tempSmall = localNoise.GetNoise(x * 0.5f + 5000.0f, z * 0.5f) * 0.1f;
+
+    climate.temperature = tempLarge + tempMedium + tempSmall;
+    climate.temperature = std::clamp(climate.temperature, -1.0f, 1.0f);
+
+    // === HUMIDITY ===
+    float humidLarge = humidityNoise.GetNoise(x, z);
+    float humidMedium = humidityNoise.GetNoise(x * 3.0f, z * 3.0f) * 0.3f;
+    float humidSmall = localNoise.GetNoise(x * 0.5f + 10000.0f, z * 0.5f) * 0.1f;
+
+    climate.humidity = humidLarge + humidMedium + humidSmall;
+    climate.humidity = std::clamp(climate.humidity, -1.0f, 1.0f);
+
+    // === CONTINENTALNESS ===
+    float contLarge = continentalnessNoise.GetNoise(x, z);
+    float contMedium = subRegionNoise.GetNoise(x, z) * 0.2f;
+    float contSmall = localNoise.GetNoise(x, z) * 0.05f;
+
+    climate.continental = contLarge + contMedium + contSmall;
+    climate.continental = std::clamp(climate.continental, -1.0f, 1.0f);
+
+    // === EROSION ===
+    float erosionLarge = erosionNoise.GetNoise(x, z);
+    float erosionMedium = erosionNoise.GetNoise(x * 2.0f, z * 2.0f) * 0.3f;
+
+    climate.erosion = erosionLarge + erosionMedium;
+    climate.erosion = std::clamp(climate.erosion, -1.0f, 1.0f);
+
+    // === PEAKS ===
+    float peaksLarge = peakNoise.GetNoise(x, z);
+    float peaksMedium = peakNoise.GetNoise(x * 2.0f, z * 2.0f) * 0.3f;
+
+    climate.peaks = peaksLarge + peaksMedium;
+    climate.peaks = std::clamp(climate.peaks, -1.0f, 1.0f);
+
+    // === WEIRDNESS ===
+    climate.weirdness = weirdnessNoise.GetNoise(x, z);
+
+    return climate;
 }
