@@ -282,22 +282,32 @@ struct Chunk {
     float alpha = 0.0f;
     bool dirty = true;
 
-    uint8_t skyLight[CHUNK_SIZE_X][CHUNK_SIZE_Y][CHUNK_SIZE_Z];
-    uint8_t blockLight[CHUNK_SIZE_X][CHUNK_SIZE_Y][CHUNK_SIZE_Z];
+    // Packed light array: high 4 bits = sky light, low 4 bits = block light
+    // This saves 65KB per chunk (130KB -> 65KB)
+    uint8_t packedLight[CHUNK_SIZE_X][CHUNK_SIZE_Y][CHUNK_SIZE_Z];
+
+    void setSkyLight(int x, int y, int z, uint8_t value) {
+        packedLight[x][y][z] = (packedLight[x][y][z] & 0x0F) | ((value & 0x0F) << 4);
+    }
+
+    void setBlockLight(int x, int y, int z, uint8_t value) {
+        packedLight[x][y][z] = (packedLight[x][y][z] & 0xF0) | (value & 0x0F);
+    }
+
+    uint8_t getSkyLight(int x, int y, int z) const {
+        return (packedLight[x][y][z] >> 4) & 0x0F;
+    }
+
+    uint8_t getBlockLight(int x, int y, int z) const {
+        return packedLight[x][y][z] & 0x0F;
+    }
 
     int getLightLevel(int x, int y, int z) const {
         if (x < 0 || x >= CHUNK_SIZE_X || y < 0 || y >= CHUNK_SIZE_Y || z < 0 || z >= CHUNK_SIZE_Z)
             return 15;
 
-        int sky = skyLight[x][y][z];
-        int block = blockLight[x][y][z];
-
-#ifndef NDEBUG
-        static int debugCount = 0;
-        if (debugCount++ < 20 && (sky > 0 || block > 0)) {
-            printf("getLightLevel(%d,%d,%d): sky=%d, block=%d\n", x, y, z, sky, block);
-        }
-#endif
+        int sky = getSkyLight(x, y, z);
+        int block = getBlockLight(x, y, z);
 
         return std::max(sky, block);
     }
@@ -504,6 +514,10 @@ namespace ChunkHelper {
                 return {90, 160, 60, 255}; // Slightly darker
             case BIOME_MOUNTAINS:
                 return {120, 150, 80, 255}; // Grayish green
+            case BIOME_TAIGA:
+                return {50, 85, 50, 255}; // Very dark cold green for taiga
+            case BIOME_SWAMP:
+                return {75, 120, 50, 255}; // Murky green
             case BIOME_OCEAN:
             case BIOME_BEACH:
             default:

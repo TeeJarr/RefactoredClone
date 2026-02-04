@@ -13,6 +13,8 @@
 #include "Engine/Settings.hpp"
 #include <raymath.h>
 
+#include "../Region/Region.hpp"
+
 constexpr int WATER_LEVEL = 62;
 constexpr int BEACH_LEVEL = 63;
 
@@ -472,178 +474,13 @@ void ChunkHelper::initNoiseRenderer() {
 }
 
 float ChunkHelper::getSurfaceHeight(int wx, int wz) {
-    float x = (float)wx;
-    float z = (float)wz;
-
-    const float SEA_LEVEL = 62.0f;
-    const float BASE_HEIGHT = 64.0f;
-
-    float continental = continentalnessNoise.GetNoise(x, z);
-    float terrain = terrainNoise.GetNoise(x, z);
-    float erosion = erosionNoise.GetNoise(x, z);
-    float peaks = peakNoise.GetNoise(x, z);
-    float detail = detailNoise.GetNoise(x, z);
-
-    float localVar = terrainNoise.GetNoise(x * 2.0f, z * 2.0f);
-    float microVar = detailNoise.GetNoise(x * 1.5f, z * 1.5f);
-
-    BiomeType biome = getBiomeAt(wx, wz);
-
-    float height;
-
-    const float OCEAN_THRESHOLD = -0.3f;
-    const float BEACH_WIDTH = 0.03f;
-
-    // Deep Ocean
-    if (continental < OCEAN_THRESHOLD - 0.2f) {
-        height = SEA_LEVEL - 20.0f;
-        height += terrain * 5.0f;
-        return std::max(height, 5.0f);
-    }
-
-    // Shallow Ocean
-    if (continental < OCEAN_THRESHOLD - BEACH_WIDTH) {
-        float depth = (OCEAN_THRESHOLD - BEACH_WIDTH - continental) / 0.2f;
-        height = SEA_LEVEL - 3.0f - depth * 15.0f;
-        height += terrain * 3.0f;
-        return std::max(height, 5.0f);
-    }
-
-    // Beach
-    if (continental < OCEAN_THRESHOLD + BEACH_WIDTH) {
-        float t = (continental - (OCEAN_THRESHOLD - BEACH_WIDTH)) / (BEACH_WIDTH * 2.0f);
-        height = SEA_LEVEL - 2.0f + t * 5.0f;
-        return height;
-    }
-
-    // --- Land ---
-    height = BASE_HEIGHT;
-
-    float flatness = (erosion + 1.0f) * 0.5f;
-    flatness = 0.3f + flatness * 0.7f;
-
-    // Base terrain for all land biomes
-    height += terrain * 8.0f * flatness;
-    height += localVar * 5.0f * flatness;
-    height += microVar * 2.0f;
-    height += detail * 1.5f;
-
-    // Gradual mountain/hill influence based on peaks value
-    // This creates smooth transitions instead of hard boundaries
-    if (peaks > -0.2f) {
-        // Gradually increase height as peaks increases
-        // -0.2 to 0.0 = slight hills
-        // 0.0 to 0.2 = medium hills
-        // 0.2 to 0.4 = large hills
-        // 0.4+ = mountains
-
-        float hillFactor = (peaks + 0.2f) / 0.4f;  // 0 to 1 for hills
-        hillFactor = std::clamp(hillFactor, 0.0f, 1.0f);
-        hillFactor = hillFactor * hillFactor;  // Smooth curve
-
-        height += hillFactor * 15.0f;
-
-        // Additional mountain height
-        if (peaks > 0.1f) {
-            float mountainFactor = (peaks - 0.1f) / 0.3f;  // 0 to 1
-            mountainFactor = std::clamp(mountainFactor, 0.0f, 1.0f);
-            mountainFactor = mountainFactor * mountainFactor;  // Smooth curve
-
-            height += mountainFactor * 25.0f;
-        }
-
-        // Extreme peaks
-        if (peaks > 0.3f) {
-            float extremeFactor = (peaks - 0.3f) / 0.4f;
-            extremeFactor = std::clamp(extremeFactor, 0.0f, 1.0f);
-            extremeFactor = extremeFactor * extremeFactor;
-
-            height += extremeFactor * 35.0f;
-        }
-    }
-
-    // Biome-specific adjustments (on top of gradual terrain)
-    switch (biome) {
-        case BIOME_DESERT:
-            // Deserts are slightly elevated and always above water
-            height += 2.0f;
-            height = std::max(height, SEA_LEVEL + 3.0f);
-            break;
-
-        case BIOME_SWAMP:
-            // Swamps are flattened toward sea level
-            height = SEA_LEVEL + 1.0f + (height - BASE_HEIGHT) * 0.2f;
-            break;
-
-        case BIOME_TAIGA:
-            // Slightly elevated cold terrain
-            height += 2.0f;
-            break;
-
-        default:
-            break;
-    }
-
-    return std::clamp(height, 1.0f, (float)(CHUNK_SIZE_Y - 5));
+    // Use the new Region system for Minecraft-style terrain generation
+    RegionParams params = Region::sampleAt(wx, wz);
+    return Region::getTerrainHeight(params, wx, wz);
 }
 
 BiomeType ChunkHelper::getBiomeAt(int wx, int wz) {
-    float x = (float)wx;
-    float z = (float)wz;
-
-    float continental = continentalnessNoise.GetNoise(x, z);
-    float temperature = temperatureNoise.GetNoise(x, z);
-    float humidity = humidityNoise.GetNoise(x, z);
-    float peaks = peakNoise.GetNoise(x, z);
-
-    const float OCEAN_THRESHOLD = -0.3f;
-    const float BEACH_WIDTH = 0.03f;
-
-    // Ocean
-    if (continental < OCEAN_THRESHOLD - BEACH_WIDTH) {
-        return BIOME_OCEAN;
-    }
-
-    // Beach
-    if (continental < OCEAN_THRESHOLD + BEACH_WIDTH) {
-        if (temperature > 0.15f && humidity < -0.1f) {
-            return BIOME_DESERT;
-        }
-        return BIOME_BEACH;
-    }
-
-    // Mountains
-    if (peaks > 0.35f) {
-        return BIOME_MOUNTAINS;
-    }
-
-    // Hills
-    if (peaks > 0.15f) {
-        // if (temperature < -0.8f) {
-        //     return BIOME_TAIGA;
-        // }
-        return BIOME_HILLS;
-    }
-
-    // Desert
-    if (temperature > 0.15f && humidity < -0.1f) {
-        return BIOME_DESERT;
-    }
-
-    // Swamp
-    if (temperature > -0.1f && humidity > 0.25f && peaks < 0.0f) {
-        return BIOME_SWAMP;
-    }
-
-    // // Taiga - only in VERY cold areas
-    if (temperature < -0.8f) {
-        return BIOME_TAIGA;
-    }
-
-    // Forest
-    if (humidity > 0.05f) {
-        return BIOME_FOREST;
-    }
-
-    return BIOME_PLAINS;
+    // Use the new Region system for Minecraft-style biome selection
+    RegionParams params = Region::sampleAt(wx, wz);
+    return static_cast<BiomeType>(Region::selectBiome(params));
 }

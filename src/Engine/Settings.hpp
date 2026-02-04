@@ -18,11 +18,11 @@ enum GameStates {
 namespace Settings {
     inline int screenWidth = 1280;
     inline int screenHeight = 720;
-    inline int frameRate = 12;
-    inline int preLoadDistance = 8;
+    inline int frameRate = 0;
 
     inline int renderDistance = 12;
-    inline int unloadDistance = renderDistance + 1;
+    inline int preLoadDistance = renderDistance + 1;
+    inline int unloadDistance = renderDistance + 2;
     inline float fov = 70.0f;
     inline int worldSeed = 0;
     inline GameStates gameStateFlag = MENU;

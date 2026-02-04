@@ -236,8 +236,14 @@ public:
     static Shader waterShader;
     static int waterTimeLoc;
 
+    // Cached frustum planes - updated once per frame
+    static Plane cachedFrustumPlanes[6];
+    static bool frustumPlanesValid;
+
     static void initWaterShader();
     static void updateWaterShader(float time);
+    static void updateFrustumPlanes(const Camera3D& camera);
+    static bool isBoxInCachedFrustum(const BoundingBox& box);
 
      static float getVertexLight(const Chunk &chunk, int bx, int by, int bz, int face, int vertex, const NeighborEdgeData &neighbors);
 

@@ -10,6 +10,7 @@
 #include "Engine/Rendering/Renderer.hpp"
 #include "World/Chunk/Chunk.hpp"
 #include <cfloat>
+#include <algorithm>
 
 #include "../Collision/Collision.hpp"
 #include "../Lighitng/LightingSystem.hpp"
@@ -257,9 +258,6 @@ void Player::update() {
         return;
     }
 
-#ifndef NDEBUG
-    this->move();
-#else
     float deltaTime = GetFrameTime();
 
     // Mouse look
@@ -299,12 +297,17 @@ void Player::update() {
 
     // Update camera target
     camera.target = Vector3Add(camera.position, forward);
-#endif
+// #endif
     this->breakBlock();
     this->placeBlock();
 }
 
 void Player::applyGravity(float deltaTime) {
+    // Skip gravity when flying
+    if (flying) {
+        return;
+    }
+
     if (!onGround) {
         velocity.y += GRAVITY * deltaTime;
 
@@ -363,6 +366,7 @@ void Player::applyGravity(float deltaTime) {
         onGround = Collision::checkCollision(groundBox);
     }
 
+
     position = newPosition;
 }
 
@@ -403,6 +407,19 @@ void Player::applyGravity(float deltaTime) {
 //     return result;
 // }
 void Player::handleMovement(float deltaTime) {
+    // Double-tap space to toggle flight mode
+    float currentTime = (float)GetTime();
+    if (IsKeyPressed(KEY_SPACE)) {
+        if (currentTime - lastSpacePressTime < DOUBLE_TAP_THRESHOLD) {
+            flying = !flying;
+            if (flying) {
+                velocity.y = 0; // Stop falling when entering flight mode
+                onGround = false;
+            }
+        }
+        lastSpacePressTime = currentTime;
+    }
+
     // Get movement input
     Vector3 moveDir = {0, 0, 0};
 
@@ -437,28 +454,48 @@ void Player::handleMovement(float deltaTime) {
         moveDir.z /= length;
     }
 
-    // Apply speed
-    float speed = MOVE_SPEED;
-    if (IsKeyDown(KEY_LEFT_SHIFT)) {
+    // Apply speed (flying is faster)
+    float speed = flying ? FLY_SPEED : MOVE_SPEED;
+    if (IsKeyDown(KEY_LEFT_SHIFT) && !flying) {
         speed *= SPRINT_MULTIPLIER;
     }
 
     moveDir.x *= speed * deltaTime;
     moveDir.z *= speed * deltaTime;
 
-    // Jump
-    if (IsKeyPressed(KEY_SPACE) && onGround) {
-        velocity.y = JUMP_VELOCITY;
-        onGround = false;
+    // Vertical movement
+    if (flying) {
+        // Flying: Space to go up, Shift to go down
+        if (IsKeyDown(KEY_SPACE)) {
+            position.y += FLY_VERTICAL_SPEED * deltaTime;
+        }
+        if (IsKeyDown(KEY_LEFT_SHIFT)) {
+            position.y -= FLY_VERTICAL_SPEED * deltaTime;
+        }
+        // Clamp to world bounds
+        position.y = std::clamp(position.y, 1.0f, 250.0f);
+    } else {
+        // Normal: Jump when on ground (single press, not the double-tap)
+        // The jump is triggered only if it wasn't a double-tap toggle
+        if (IsKeyDown(KEY_SPACE) && onGround &&
+            (currentTime - lastSpacePressTime >= DOUBLE_TAP_THRESHOLD || !IsKeyPressed(KEY_SPACE))) {
+            velocity.y = JUMP_VELOCITY;
+            onGround = false;
+        }
     }
 
-    // Apply horizontal movement with collision
+    // Apply horizontal movement with collision (skip collision in flight for smoother movement)
     if (length > 0) {
-        position = moveWithCollision(position, {
-                                         position.x + moveDir.x,
-                                         position.y,
-                                         position.z + moveDir.z
-                                     });
+        if (flying) {
+            position.x += moveDir.x;
+            position.z += moveDir.z;
+        } else {
+            position = moveWithCollision(position, {
+                                             position.x + moveDir.x,
+                                             position.y,
+                                             position.z + moveDir.z
+                                         });
+        }
     }
 }
 
@@ -540,14 +577,11 @@ void Player::trySpawn() {
     int blockAbove2 = ChunkHelper::getBlock(spawnX, spawnY + 1, spawnZ);
 
     if (blockAbove1 != ID_AIR || blockAbove2 != ID_AIR) {
-        // Not enough space, find another spot
-        // Try nearby positions
         for (int dx = -5; dx <= 5; dx++) {
             for (int dz = -5; dz <= 5; dz++) {
                 int testX = spawnX + dx;
                 int testZ = spawnZ + dz;
 
-                // Find ground
                 for (int y = CHUNK_SIZE_Y - 1; y >= 0; y--) {
                     int blockId = ChunkHelper::getBlock(testX, y, testZ);
 
@@ -567,7 +601,6 @@ void Player::trySpawn() {
             }
         }
 
-        // Still no valid spawn, wait for more chunks
         return;
     }
 
@@ -583,6 +616,9 @@ foundSpawn:
 
     spawned = true;
     waitingForChunks = false;
+
+    // Disable cursor for gameplay
+    DisableCursor();
 
     printf("Player spawned at (%.1f, %.1f, %.1f)\n", position.x, position.y, position.z);
 }

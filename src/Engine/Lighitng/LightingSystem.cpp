@@ -5,7 +5,7 @@
 #include "LightingSystem.hpp"
 
 void LightingSystem::calculateSkyLight(Chunk& chunk) {
-    memset(chunk.skyLight, 0, sizeof(chunk.skyLight));
+    memset(chunk.packedLight, 0, sizeof(chunk.packedLight));
 
     // Step 1: Downward pass
     for (int x = 0; x < CHUNK_SIZE_X; x++) {
@@ -16,9 +16,9 @@ void LightingSystem::calculateSkyLight(Chunk& chunk) {
                 BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
 
                 if (id == ID_AIR || isBlockTranslucent(id)) {
-                    chunk.skyLight[x][y][z] = lightLevel;
+                    chunk.setSkyLight(x, y, z, lightLevel);
                 } else {
-                    chunk.skyLight[x][y][z] = 0;
+                    chunk.setSkyLight(x, y, z, 0);
                     lightLevel = 0;
                 }
             }
@@ -31,10 +31,10 @@ void LightingSystem::calculateSkyLight(Chunk& chunk) {
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
                 BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
-                if ((id == ID_AIR || isBlockTranslucent(id)) && chunk.skyLight[x][y][z] == 0) {
+                if ((id == ID_AIR || isBlockTranslucent(id)) && chunk.getSkyLight(x, y, z) == 0) {
                     needsSpread++;
                 }
-                if (id == ID_AIR && chunk.skyLight[x][y][z] == 0) {
+                if (id == ID_AIR && chunk.getSkyLight(x, y, z) == 0) {
                     underBlocks++;
                 }
             }
@@ -54,9 +54,9 @@ void LightingSystem::propagateSkyLight(Chunk& chunk) {
     for (int x = 0; x < CHUNK_SIZE_X; x++) {
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-                if (chunk.skyLight[x][y][z] > 0) {
-                    lightQueue.push({x, y, z, chunk.chunkCoords.x, chunk.chunkCoords.z,
-                                     chunk.skyLight[x][y][z]});
+                uint8_t sky = chunk.getSkyLight(x, y, z);
+                if (sky > 0) {
+                    lightQueue.push({x, y, z, chunk.chunkCoords.x, chunk.chunkCoords.z, sky});
                 }
             }
         }
@@ -90,8 +90,8 @@ void LightingSystem::propagateSkyLight(Chunk& chunk) {
 
             uint8_t newLight = node.lightLevel - 1;
 
-            if (newLight > chunk.skyLight[nx][ny][nz]) {
-                chunk.skyLight[nx][ny][nz] = newLight;
+            if (newLight > chunk.getSkyLight(nx, ny, nz)) {
+                chunk.setSkyLight(nx, ny, nz, newLight);
                 lightQueue.push({nx, ny, nz, node.chunkX, node.chunkZ, newLight});
             }
         }
@@ -112,10 +112,10 @@ void LightingSystem::calculateBlockLight(Chunk& chunk) {
                 uint8_t emission = getBlockLightEmission(id);
 
                 if (emission > 0) {
-                    chunk.blockLight[x][y][z] = emission;
+                    chunk.setBlockLight(x, y, z, emission);
                     lightQueue.push({x, y, z, chunk.chunkCoords.x, chunk.chunkCoords.z, emission});
                 } else {
-                    chunk.blockLight[x][y][z] = 0;
+                    chunk.setBlockLight(x, y, z, 0);
                 }
             }
         }
@@ -142,8 +142,8 @@ void LightingSystem::calculateBlockLight(Chunk& chunk) {
 
             uint8_t newLight = node.lightLevel - 1;
 
-            if (newLight > chunk.blockLight[nx][ny][nz]) {
-                chunk.blockLight[nx][ny][nz] = newLight;
+            if (newLight > chunk.getBlockLight(nx, ny, nz)) {
+                chunk.setBlockLight(nx, ny, nz, newLight);
                 lightQueue.push({nx, ny, nz, node.chunkX, node.chunkZ, newLight});
             }
         }
@@ -173,7 +173,7 @@ void LightingSystem::updateLightingAfterBlockBreak(Chunk& chunk, int x, int y, i
 
         if (nx >= 0 && nx < CHUNK_SIZE_X && ny >= 0 && ny < CHUNK_SIZE_Y && nz >= 0 &&
             nz < CHUNK_SIZE_Z) {
-            maxNeighborLight = std::max(maxNeighborLight, (int)chunk.skyLight[nx][ny][nz]);
+            maxNeighborLight = std::max(maxNeighborLight, (int)chunk.getSkyLight(nx, ny, nz));
         }
     }
 
@@ -187,13 +187,13 @@ void LightingSystem::updateLightingAfterBlockBreak(Chunk& chunk, int x, int y, i
     }
 
     if (hasSkyAbove) {
-        chunk.skyLight[x][y][z] = 15;
+        chunk.setSkyLight(x, y, z, 15);
     } else {
-        chunk.skyLight[x][y][z] = std::max(0, maxNeighborLight - 1);
+        chunk.setSkyLight(x, y, z, std::max(0, maxNeighborLight - 1));
     }
 
     std::queue<LightNode> lightQueue;
-    lightQueue.push({x, y, z, chunk.chunkCoords.x, chunk.chunkCoords.z, chunk.skyLight[x][y][z]});
+    lightQueue.push({x, y, z, chunk.chunkCoords.x, chunk.chunkCoords.z, chunk.getSkyLight(x, y, z)});
 }
 
 void LightingSystem::calculateChunkLighting(Chunk& chunk) {
@@ -217,11 +217,11 @@ void LightingSystem::propagateLightAcrossChunks(Chunk& chunk) {
         auto& leftChunk = ChunkHelper::activeChunks.at(neighbors[0]);
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-                int neighborLight = leftChunk->skyLight[CHUNK_SIZE_X - 1][y][z];
-                if (neighborLight > 1 && neighborLight - 1 > chunk.skyLight[0][y][z]) {
+                int neighborLight = leftChunk->getSkyLight(CHUNK_SIZE_X - 1, y, z);
+                if (neighborLight > 1 && neighborLight - 1 > chunk.getSkyLight(0, y, z)) {
                     auto id = static_cast<BlockIds>(chunk.blockPosition[0][y][z]);
                     if (id == ID_AIR || isBlockTranslucent(id)) {
-                        chunk.skyLight[0][y][z] = neighborLight - 1;
+                        chunk.setSkyLight(0, y, z, neighborLight - 1);
                         lightQueue.push({0, y, z, coord.x, coord.z, (uint8_t)(neighborLight - 1)});
                     }
                 }
@@ -233,13 +233,13 @@ void LightingSystem::propagateLightAcrossChunks(Chunk& chunk) {
         auto& rightChunk = ChunkHelper::activeChunks.at(neighbors[1]);
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-                int neighborLight = rightChunk->skyLight[0][y][z];
+                int neighborLight = rightChunk->getSkyLight(0, y, z);
                 if (neighborLight > 1 &&
-                    neighborLight - 1 > chunk.skyLight[CHUNK_SIZE_X - 1][y][z]) {
+                    neighborLight - 1 > chunk.getSkyLight(CHUNK_SIZE_X - 1, y, z)) {
                     BlockIds id =
                         static_cast<BlockIds>(chunk.blockPosition[CHUNK_SIZE_X - 1][y][z]);
                     if (id == ID_AIR || isBlockTranslucent(id)) {
-                        chunk.skyLight[CHUNK_SIZE_X - 1][y][z] = neighborLight - 1;
+                        chunk.setSkyLight(CHUNK_SIZE_X - 1, y, z, neighborLight - 1);
                         lightQueue.push({CHUNK_SIZE_X - 1, y, z, coord.x, coord.z,
                                          (uint8_t)(neighborLight - 1)});
                     }
@@ -252,11 +252,11 @@ void LightingSystem::propagateLightAcrossChunks(Chunk& chunk) {
         auto& frontChunk = ChunkHelper::activeChunks.at(neighbors[2]);
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int x = 0; x < CHUNK_SIZE_X; x++) {
-                int neighborLight = frontChunk->skyLight[x][y][CHUNK_SIZE_Z - 1];
-                if (neighborLight > 1 && neighborLight - 1 > chunk.skyLight[x][y][0]) {
+                int neighborLight = frontChunk->getSkyLight(x, y, CHUNK_SIZE_Z - 1);
+                if (neighborLight > 1 && neighborLight - 1 > chunk.getSkyLight(x, y, 0)) {
                     BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][0]);
                     if (id == ID_AIR || isBlockTranslucent(id)) {
-                        chunk.skyLight[x][y][0] = neighborLight - 1;
+                        chunk.setSkyLight(x, y, 0, neighborLight - 1);
                         lightQueue.push({x, y, 0, coord.x, coord.z, (uint8_t)(neighborLight - 1)});
                     }
                 }
@@ -268,13 +268,13 @@ void LightingSystem::propagateLightAcrossChunks(Chunk& chunk) {
         auto& backChunk = ChunkHelper::activeChunks.at(neighbors[3]);
         for (int y = 0; y < CHUNK_SIZE_Y; y++) {
             for (int x = 0; x < CHUNK_SIZE_X; x++) {
-                int neighborLight = backChunk->skyLight[x][y][0];
+                int neighborLight = backChunk->getSkyLight(x, y, 0);
                 if (neighborLight > 1 &&
-                    neighborLight - 1 > chunk.skyLight[x][y][CHUNK_SIZE_Z - 1]) {
+                    neighborLight - 1 > chunk.getSkyLight(x, y, CHUNK_SIZE_Z - 1)) {
                     BlockIds id =
                         static_cast<BlockIds>(chunk.blockPosition[x][y][CHUNK_SIZE_Z - 1]);
                     if (id == ID_AIR || isBlockTranslucent(id)) {
-                        chunk.skyLight[x][y][CHUNK_SIZE_Z - 1] = neighborLight - 1;
+                        chunk.setSkyLight(x, y, CHUNK_SIZE_Z - 1, neighborLight - 1);
                         lightQueue.push({x, y, CHUNK_SIZE_Z - 1, coord.x, coord.z,
                                          (uint8_t)(neighborLight - 1)});
                     }
@@ -303,12 +303,12 @@ void LightingSystem::spreadLightFromNeighbor(Chunk& chunk, Chunk& neighbor, int 
         case 0:
             for (int y = 0; y < CHUNK_SIZE_Y; y++) {
                 for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-                    int neighborLight = neighbor.skyLight[CHUNK_SIZE_X - 1][y][z];
+                    int neighborLight = neighbor.getSkyLight(CHUNK_SIZE_X - 1, y, z);
                     BlockIds id = static_cast<BlockIds>(chunk.blockPosition[0][y][z]);
                     if ((id == ID_AIR || isBlockTranslucent(id)) && neighborLight > 1) {
                         uint8_t newLight = neighborLight - 1;
-                        if (newLight > chunk.skyLight[0][y][z]) {
-                            chunk.skyLight[0][y][z] = newLight;
+                        if (newLight > chunk.getSkyLight(0, y, z)) {
+                            chunk.setSkyLight(0, y, z, newLight);
                             lightQueue.push({0, y, z, 0, 0, newLight});
                             edgeUpdates++;
                         }
@@ -342,8 +342,8 @@ void LightingSystem::spreadLightFromNeighbor(Chunk& chunk, Chunk& neighbor, int 
             if (neighborId != ID_AIR && !isBlockTranslucent(neighborId)) continue;
 
             uint8_t newLight = node.lightLevel - 1;
-            if (newLight > chunk.skyLight[nx][ny][nz]) {
-                chunk.skyLight[nx][ny][nz] = newLight;
+            if (newLight > chunk.getSkyLight(nx, ny, nz)) {
+                chunk.setSkyLight(nx, ny, nz, newLight);
                 lightQueue.push({nx, ny, nz, 0, 0, newLight});
                 propagated++;
             }
@@ -393,8 +393,8 @@ void LightingSystem::propagateLightQueue(Chunk& chunk, std::queue<LightNode>& li
             if (neighborId != ID_AIR && !isBlockTranslucent(neighborId)) continue;
 
             uint8_t newLight = node.lightLevel - 1;
-            if (newLight > chunk.skyLight[nx][ny][nz]) {
-                chunk.skyLight[nx][ny][nz] = newLight;
+            if (newLight > chunk.getSkyLight(nx, ny, nz)) {
+                chunk.setSkyLight(nx, ny, nz, newLight);
                 lightQueue.push({nx, ny, nz, node.chunkX, node.chunkZ, newLight});
             }
         }

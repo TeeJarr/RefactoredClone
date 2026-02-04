@@ -43,7 +43,11 @@ Engine::Engine() {
 
 void Engine::update() {
     double frameStart = GetTime();
-    double framebudget = 1.0 / 60.0; // 16.6ms for 60fps
+    double frameBudget = 1.0 / 60.0; // 16.6ms for 60fps
+
+    auto hasTimeBudget = [&]() {
+        return (GetTime() - frameStart) < frameBudget;
+    };
 
     if (IsKeyPressed(KEY_ESCAPE)) {
         if (Settings::gameStateFlag == GameStates::IN_GAME) {
@@ -56,16 +60,32 @@ void Engine::update() {
     }
 
     if (Settings::gameStateFlag == GameStates::IN_GAME) {
-        Renderer::checkActiveChunks(this->player->getCamera());
-
-        Renderer::processChunkBuildQueue(this->player->getCamera());
-
-        Renderer::uploadPendingMeshes();
+        // Always do player update first (critical for responsiveness)
         this->player->update();
 
-        Renderer::rebuildDirtyChunks();
+        // Chunk loading - always run to keep world populated
+        if (hasTimeBudget()) {
+            Renderer::checkActiveChunks(this->player->getCamera());
+        }
 
+        // Process build queue - can be deferred if over budget
+        if (hasTimeBudget()) {
+            Renderer::processChunkBuildQueue(this->player->getCamera());
+        }
+
+        // GPU uploads - important for visual updates
+        if (hasTimeBudget()) {
+            Renderer::uploadPendingMeshes();
+        }
+
+        // Water shader always updates (cheap)
         Renderer::updateWaterShader(static_cast<float>(GetTime()));
+
+        // Dirty chunk rebuilds - can be deferred
+        if (hasTimeBudget()) {
+            Renderer::rebuildDirtyChunks();
+        }
+
         // Renderer::unloadChunks(this->player->getCamera());
         coords = std::to_string(this->player->getCamera().position.x) + ", " +
                  std::to_string(this->player->getCamera().position.y) + ", " +

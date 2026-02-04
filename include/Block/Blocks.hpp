@@ -105,7 +105,29 @@ inline std::unordered_map<BlockIds, FaceTint> blockFaceTints = {
     {ID_WATER, makeFaceTint(WATER_TINT)},                // All faces tinted
 };
 
-// Helper to get face tint
+// Biome grass tint lookup (mirrors getBiomeGrassTint in Chunk.hpp)
+inline Color getBiomeGrassTintForBlock(int biome) {
+    switch (biome) {
+        case 2:  // BIOME_DESERT
+            return {190, 180, 110, 255};
+        case 4:  // BIOME_FOREST
+            return {80, 140, 50, 255};
+        case 3:  // BIOME_PLAINS
+            return {105, 175, 59, 255};
+        case 7:  // BIOME_HILLS
+            return {90, 160, 60, 255};
+        case 8:  // BIOME_MOUNTAINS
+            return {120, 150, 80, 255};
+        case 5:  // BIOME_TAIGA
+            return {50, 85, 50, 255};  // Very dark cold green for taiga
+        case 6:  // BIOME_SWAMP
+            return {75, 120, 50, 255};
+        default:
+            return {105, 175, 59, 255};
+    }
+}
+
+// Helper to get face tint (overload without biome for non-grass blocks)
 inline Color getBlockFaceTint(BlockIds id, int face) {
     auto it = blockFaceTints.find(id);
     if (it != blockFaceTints.end()) {
@@ -119,6 +141,17 @@ inline Color getBlockFaceTint(BlockIds id, int face) {
     }
 
     return WHITE;
+}
+
+// Helper to get face tint with biome support
+inline Color getBlockFaceTint(BlockIds id, int face, int biome) {
+    // For grass blocks, tint top and sides (not bottom)
+    if (id == ID_GRASS && face != 5) {  // face 5 is bottom (dirt)
+        return getBiomeGrassTintForBlock(biome);
+    }
+
+    // For other blocks/faces, use standard tint
+    return getBlockFaceTint(id, face);
 }
 // In Blocks.hpp - add these functions or a lookup table
 

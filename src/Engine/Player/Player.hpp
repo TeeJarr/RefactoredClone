@@ -31,6 +31,11 @@ private:
     Vector3 velocity = {0, 0, 0};
     bool onGround = false;
 
+    // Flight mode (double-tap space to toggle)
+    bool flying = false;
+    float lastSpacePressTime = 0.0f;
+    const float DOUBLE_TAP_THRESHOLD = 0.3f; // 300ms to double-tap
+
     const float PLAYER_WIDTH = 0.6f;
     const float PLAYER_HEIGHT = 1.8f;
     const float EYE_HEIGHT = 1.62f;  // Eye level from feet
@@ -38,10 +43,12 @@ private:
     const float JUMP_VELOCITY = 9.0f;
     const float MOVE_SPEED = 5.0f;
     const float SPRINT_MULTIPLIER = 1.5f;
+    const float FLY_SPEED = 15.0f;
+    const float FLY_VERTICAL_SPEED = 10.0f;
 
     Vector3 position{};  // Position at player's feet
 
-    bool spawned = true;
+    bool spawned = false;
     bool waitingForChunks = true;
 
     void placeBlock();

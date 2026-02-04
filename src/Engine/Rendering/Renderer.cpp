@@ -29,6 +29,10 @@ constexpr float ATLAS_HEIGHT = 64000.0f;
 Texture2D Renderer::textureAtlas = {};
 std::vector<std::thread> Renderer::workers;
 
+// Cached frustum planes for per-frame culling optimization
+Plane Renderer::cachedFrustumPlanes[6] = {};
+bool Renderer::frustumPlanesValid = false;
+
 NeighborEdgeData Renderer::cacheNeighborEdges(const ChunkCoord& coord) {
     NeighborEdgeData data;
     auto it = ChunkHelper::activeChunks.find({coord.x - 1, coord.z});
@@ -90,13 +94,14 @@ ChunkMeshTriple Renderer::buildChunkMeshesInternal(const Chunk& chunk,
                                                    const NeighborEdgeData& neighbors) {
     ChunkMeshTriple meshes;
 
-    meshes.opaque.reserve(3000);
-    meshes.translucent.reserve(500);
-    meshes.water.reserve(500);
+    meshes.opaque.reserve(10000);
+    meshes.translucent.reserve(2000);
+    meshes.water.reserve(2000);
 
+    // Optimized loop order: X-Y-Z matches array memory layout for better cache performance
     for (int x = 0; x < CHUNK_SIZE_X; x++) {
-        for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+        for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+            for (int z = 0; z < CHUNK_SIZE_Z; z++) {
                 BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
                 if (id == ID_AIR) continue;
 
@@ -119,7 +124,9 @@ ChunkMeshTriple Renderer::buildChunkMeshesInternal(const Chunk& chunk,
                 for (int f = 0; f < 6; f++) {
                     if (!isFaceExposed(chunk, x, y, z, f, isTranslucent, neighbors)) continue;
 
-                    Color faceTint = getBlockFaceTint(id, f);
+                    // Get biome-aware tint for grass blocks
+                    int biome = chunk.biomeMap[x][z];
+                    Color faceTint = getBlockFaceTint(id, f, biome);
                     AddFaceWithAlpha(*buf, {(float)x, (float)y, (float)z}, f, def, FACE_LIGHT[f],
                                      faceTint, alpha, chunk, neighbors);
                 }
@@ -263,9 +270,10 @@ ChunkMeshTriple Renderer::buildChunkMeshes(const Chunk& chunk) {
 
     NeighborEdgeData neighbors = cacheNeighborEdges(chunk.chunkCoords);
 
+    // Optimized loop order: X-Y-Z matches array memory layout for better cache performance
     for (int x = 0; x < CHUNK_SIZE_X; x++) {
-        for (int z = 0; z < CHUNK_SIZE_Z; z++) {
-            for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+        for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+            for (int z = 0; z < CHUNK_SIZE_Z; z++) {
                 BlockIds id = static_cast<BlockIds>(chunk.blockPosition[x][y][z]);
                 if (id == ID_AIR) continue;
 
@@ -288,7 +296,9 @@ ChunkMeshTriple Renderer::buildChunkMeshes(const Chunk& chunk) {
                 for (int f = 0; f < 6; f++) {
                     if (!isFaceExposed(chunk, x, y, z, f, isTranslucent, neighbors)) continue;
 
-                    Color faceTint = getBlockFaceTint(id, f);
+                    // Get biome-aware tint for grass blocks
+                    int biome = chunk.biomeMap[x][z];
+                    Color faceTint = getBlockFaceTint(id, f, biome);
                     AddFaceWithAlpha(*buf, {(float)x, (float)y, (float)z}, f, def, FACE_LIGHT[f],
                                      faceTint, alpha, chunk, neighbors);
                 }
@@ -343,7 +353,7 @@ void Renderer::buildChunkModel(const Chunk& chunk) {
 }
 
 void Renderer::drawChunkTranslucent(const std::unique_ptr<Chunk>& chunk, const Camera3D& camera) {
-    if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
+    if (!isBoxInCachedFrustum(chunk->boundingBox)) return;
     if (!chunk->loaded) return;
     if (chunk->translucentModel.meshCount == 0) return;
 
@@ -354,7 +364,7 @@ void Renderer::drawChunkTranslucent(const std::unique_ptr<Chunk>& chunk, const C
 }
 
 void Renderer::drawChunkWater(const std::unique_ptr<Chunk>& chunk, const Camera3D& camera) {
-    if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
+    if (!isBoxInCachedFrustum(chunk->boundingBox)) return;
     if (!chunk->loaded) return;
     if (chunk->waterModel.meshCount == 0) return;
 
@@ -399,7 +409,7 @@ Model Renderer::buildModelFromBuffers(ChunkMeshBuffers& buf) {
 }
 
 void Renderer::drawChunkOpaque(const std::unique_ptr<Chunk>& chunk, const Camera3D& camera) {
-    if (!isBoxOnScreen(chunk->boundingBox, camera)) return;
+    if (!isBoxInCachedFrustum(chunk->boundingBox)) return;
     if (!chunk->loaded) return;
 
     chunk->alpha += GetFrameTime() * 2.0f;
@@ -417,6 +427,9 @@ void Renderer::drawChunkOpaque(const std::unique_ptr<Chunk>& chunk, const Camera
 }
 
 void Renderer::drawAllChunks(const Camera3D& camera) {
+    // Update frustum planes once per frame
+    updateFrustumPlanes(camera);
+
     for (auto& [coord, chunk] : ChunkHelper::activeChunks) {
         if (chunk) {
             drawChunkOpaque(chunk, camera);
@@ -587,6 +600,16 @@ bool Renderer::IsBoxInFrustum(const BoundingBox& box, const Plane planes[6]) {
     }
 
     return true;
+}
+
+void Renderer::updateFrustumPlanes(const Camera3D& camera) {
+    GetCameraFrustumPlanes(camera, cachedFrustumPlanes);
+    frustumPlanesValid = true;
+}
+
+bool Renderer::isBoxInCachedFrustum(const BoundingBox& box) {
+    if (!frustumPlanesValid) return true; // If not updated yet, assume visible
+    return IsBoxInFrustum(box, cachedFrustumPlanes);
 }
 
 void Renderer::checkActiveChunks(const Camera3D& camera) {
@@ -981,32 +1004,15 @@ void Renderer::processChunkBuildQueue(const Camera3D& camera) {
     constexpr int MAX_CHUNKS_PER_FRAME = 2;
     int processed = 0;
 
-    ChunkCoord playerChunk = getPlayerChunkCoord(camera);
-
     std::vector<std::unique_ptr<Chunk>> pendingChunks;
     {
         std::unique_ptr<Chunk> chunk;
         while (ChunkHelper::chunkBuildQueue.try_pop(chunk)) {
             if (chunk) {
-                int dx = abs(chunk->chunkCoords.x - playerChunk.x);
-                int dz = abs(chunk->chunkCoords.z - playerChunk.z);
-
-                // Only keep chunks within range
-                if (dx <= Settings::preLoadDistance && dz <= Settings::preLoadDistance) {
-                    pendingChunks.push_back(std::move(chunk));
-                }
+                pendingChunks.push_back(std::move(chunk));
             }
         }
     }
-
-    std::sort(pendingChunks.begin(), pendingChunks.end(),
-              [&playerChunk](const std::unique_ptr<Chunk>& a, const std::unique_ptr<Chunk>& b) {
-                  int distA =
-                      abs(a->chunkCoords.x - playerChunk.x) + abs(a->chunkCoords.z - playerChunk.z);
-                  int distB =
-                      abs(b->chunkCoords.x - playerChunk.x) + abs(b->chunkCoords.z - playerChunk.z);
-                  return distA < distB;
-              });
 
     for (auto& chunk : pendingChunks) {
         if (processed >= MAX_CHUNKS_PER_FRAME) {
@@ -1045,10 +1051,18 @@ void Renderer::processChunkBuildQueue(const Camera3D& camera) {
         replaceChunk(coord, std::move(chunk));
 
         g_meshThreadPool->submit([coord]() {
-            std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
-            auto it = ChunkHelper::activeChunks.find(coord);
-            if (it != ChunkHelper::activeChunks.end() && it->second) {
-                Renderer::buildChunkMeshAsync(*it->second);
+            // Get chunk pointer under lock, then release before building
+            // This reduces mutex contention significantly
+            Chunk* chunkPtr = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(ChunkHelper::activeChunksMutex);
+                auto it = ChunkHelper::activeChunks.find(coord);
+                if (it != ChunkHelper::activeChunks.end() && it->second) {
+                    chunkPtr = it->second.get();
+                }
+            }
+            if (chunkPtr) {
+                Renderer::buildChunkMeshAsync(*chunkPtr);
             }
         });
 
